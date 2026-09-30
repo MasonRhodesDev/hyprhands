@@ -2,7 +2,10 @@
 //!
 //! The first reason latches; every input after it is refused until the next session's
 //! `baseline`. Observations while hyprhands' own input runs, and for `SETTLE` after it, are its
-//! own echo (the pointer it moved, the focus it changed) and never count.
+//! own echo (the pointer it moved, the focus it changed) and never count. The cursor seen during
+//! the echo becomes where hyprhands left it: the owner's config may warp it after a focus change
+//! (`cursor:no_warps = false` sends it to the focused window's centre), and that warp lands after
+//! the dispatch has already answered.
 //!
 //! - The cursor more than `tolerance` px from where hyprhands last left it: a hand on the mouse.
 //! - The focused monitor leaving the driven one: a click or workspace switch elsewhere.
@@ -48,6 +51,11 @@ impl Takeover {
         self.busy += 1;
     }
 
+    /// Where hyprhands' own input is known to be sending the cursor, ahead of seeing it there.
+    pub fn expect(&mut self, cursor: (f64, f64)) {
+        self.expected = Some(cursor);
+    }
+
     /// Input finished; `cursor` is where it left the pointer (None if it could not be read).
     pub fn end(&mut self, cursor: Option<(f64, f64)>, now: Instant) {
         self.busy = self.busy.saturating_sub(1);
@@ -60,6 +68,7 @@ impl Takeover {
     pub fn cursor_seen(&mut self, pos: (f64, f64), now: Instant) {
         let Some(exp) = self.expected else { return };
         if self.echo(now) {
+            self.expected = Some(pos);
             return;
         }
         let drift = (pos.0 - exp.0).hypot(pos.1 - exp.1);
@@ -108,6 +117,19 @@ mod tests {
         assert!(t.reason().is_none());
         t.cursor_seen((1500.0, 1100.0), later);
         assert!(t.reason().is_some());
+    }
+
+    #[test]
+    fn a_warp_that_lands_after_the_op_answered_is_ours() {
+        let (mut t, now) = seat();
+        t.begin();
+        t.end(Some((500.0, 500.0)), now); // read before the compositor's warp landed
+        t.cursor_seen((-540.0, 510.0), now + Duration::from_millis(100));
+        let later = now + SETTLE + Duration::from_millis(100);
+        t.cursor_seen((-540.0, 510.0), later);
+        assert!(t.reason().is_none());
+        t.cursor_seen((-100.0, 510.0), later);
+        assert!(t.reason().is_some(), "a hand on the mouse after the settle still latches");
     }
 
     #[test]

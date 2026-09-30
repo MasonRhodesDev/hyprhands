@@ -31,14 +31,19 @@ const MASK: [(u32, &str); 8] = [
 const LOCKS: [&str; 2] = ["caps", "mod2"];
 
 /// Options that change what an input does.
-pub const OPTIONS: [&str; 7] = [
+pub const OPTIONS: [&str; 12] = [
     "input:follow_mouse",
+    "input:mouse_refocus",
     "input:kb_layout",
     "input:kb_variant",
     "input:kb_options",
     "input:repeat_rate",
     "input:repeat_delay",
     "cursor:no_warps",
+    "cursor:persistent_warps",
+    "cursor:warp_on_change_workspace",
+    "cursor:warp_on_monitor_change",
+    "cursor:warp_back_after_non_mouse_input",
 ];
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -110,6 +115,13 @@ impl Config {
         }
         let keyboards = instance.query("devices").ok().and_then(|d| d["keyboards"].as_array().cloned()).unwrap_or_default();
         Ok(Self { binds, options, keyboards })
+    }
+
+    /// Whether focusing a window from a dispatcher warps the cursor to its centre: Hyprland's
+    /// default, off only with `cursor:no_warps`.
+    pub fn warps_on_focus(&self) -> bool {
+        let v = self.options.get("cursor:no_warps");
+        !v.is_some_and(|v| v["bool"].as_bool().unwrap_or(false) || v["int"].as_i64().unwrap_or(0) != 0)
     }
 
     /// The bind that would swallow `combo`, if any. Non-consuming binds still pass the key on, so

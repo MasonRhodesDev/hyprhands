@@ -40,9 +40,9 @@ pub struct Server {
     takeover: Arc<Mutex<Takeover>>,
     /// Connected on the first tree request, and again after a failure: the bus may come up later.
     a11y: Option<A11y>,
-    /// The window the agent launched, focused or brought, while it stays on the driven workspace.
-    /// Without it the agent's window is the driven workspace's most recently focused one, which is
-    /// the owner's the moment they open something there.
+    /// The window the agent launched, focused or brought, while it stays on the driven workspace:
+    /// what it chose to work in, whether its own window or one of the owner's. Without one, the
+    /// agent's window is the driven workspace's most recently focused one.
     claimed: Option<String>,
 }
 
@@ -241,7 +241,25 @@ impl Server {
     fn focus_agent_window(&self) -> Result<()> {
         if let Some(w) = self.window()? {
             if let Some(addr) = w["address"].as_str() {
-                self.hypr.focus_window(addr)?;
+                self.focus(addr)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Focus a window unless it already has focus (a redundant focus still warps the cursor), and
+    /// tell the takeover watch where the owner's config will warp the cursor, if it does.
+    fn focus(&self, addr: &str) -> Result<()> {
+        if self.hypr.query("activewindow").is_ok_and(|w| w["address"] == addr) {
+            return Ok(());
+        }
+        self.hypr.focus_window(addr)?;
+        if self.config.warps_on_focus() {
+            let clients = self.hypr.query("clients")?;
+            if let Some(c) = clients.as_array().into_iter().flatten().find(|c| c["address"] == addr) {
+                let n = |v: &Value| v.as_f64().unwrap_or(0.0);
+                let centre = ((n(&c["at"][0]) + n(&c["size"][0]) / 2.0).floor(), (n(&c["at"][1]) + n(&c["size"][1]) / 2.0).floor());
+                self.takeover.lock().unwrap().expect(centre);
             }
         }
         Ok(())
@@ -282,7 +300,7 @@ impl Server {
             }
             "focus" => {
                 let addr = req["address"].as_str().unwrap_or_default();
-                self.hypr.focus_window(addr)?;
+                self.focus(addr)?;
                 self.claimed = Some(addr.to_owned());
             }
             "bring" => {
@@ -295,7 +313,7 @@ impl Server {
                         self.hypr.move_window_silent(addr, ws)?;
                     }
                 }
-                self.hypr.focus_window(addr)?;
+                self.focus(addr)?;
                 self.claimed = Some(addr.to_owned());
             }
             "launch" => return self.launch(req),

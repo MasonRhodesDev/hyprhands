@@ -87,6 +87,18 @@ fn doctor() -> Result<()> {
     }
     let cfg = config::Config::load(&instance)?;
     ok("config", format!("{} binds, {} keyboards, read only", cfg.binds.len(), cfg.keyboards.len()));
+    let opt = |name: &str| cfg.options.get(name).map(|v| v.get("bool").or(v.get("int")).or(v.get("str")).cloned().unwrap_or_default()).unwrap_or_default();
+    ok(
+        "cursor",
+        format!(
+            "{}; warp on workspace change {}, on monitor change {}, back after keys {}; follow_mouse {}",
+            if cfg.warps_on_focus() { "focusing a window warps the cursor to its centre" } else { "no warps" },
+            opt("cursor:warp_on_change_workspace"),
+            opt("cursor:warp_on_monitor_change"),
+            opt("cursor:warp_back_after_non_mouse_input"),
+            opt("input:follow_mouse"),
+        ),
+    );
     let wl = wl::Wl::connect()?;
     ok("wayland", format!("screencopy, virtual pointer and keyboard bound; outputs {:?}", wl.output_names()));
     match a11y::A11y::connect().and_then(|a| a.app_count()) {
