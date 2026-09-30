@@ -60,8 +60,6 @@ do = { wait_ms = 400 }
   min_fraction = 0.9
 
 # Park the pointer: the arrow wears the robot badge, right there, with no lag to chase.
-# (Blocked on plain-hyprland for now: `hyprctl setcursor` does not change the pointer in that
-# guest for any theme, stock Adwaita included; reported to hypr-qa.)
 [[step]]
 id = "robot-cursor"
 do = { hyprhands = { op = "move", x = 400, y = 300 } }
@@ -194,7 +192,7 @@ settle_ms = 1200
 [[step]]
 id = "killed"
 do = { session = "pkill -TERM -x hyprhands; sleep 0.3" }
-settle_ms = 800
+settle_ms = 2200
 
   [[step.expect]]
   at = "+300ms..+700ms"
@@ -206,8 +204,8 @@ settle_ms = 800
   min_fraction = 0.9
   not = true
 
-  [[step.expect]]                  # the badge is gone from the pointer (still parked at 420, 320)
-  at = "+300ms..+700ms"
+  [[step.expect]]                  # the badge is gone from the pointer (still parked at 420, 320);
+  at = "+1400ms..+1900ms"          # the restore hides and shows the cursor, ~1.2 s
   anchor = "ack"
   check = "pixel"
   region = [430, 330, 14, 14]

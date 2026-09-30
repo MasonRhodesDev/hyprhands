@@ -66,10 +66,36 @@ fn theme_dir() -> PathBuf {
     data.join("icons").join(THEME)
 }
 
+/// How long each `cursor:invisible` state is held: Hyprland acts on that option from a 500 ms
+/// timer, so a quicker toggle is never seen.
+const REAPPLY_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// `hyprctl setcursor`, made to show. Hyprland 0.56 loads the new theme but re-applies the shape
+/// only when its name changes, so over an empty desktop (always `left_ptr`) the old image stays
+/// however the pointer moves. Hiding and showing the cursor forces the re-apply; the pointer is
+/// gone for about a second. Skipped when the owner already has the cursor hidden (it re-applies
+/// when shown). Found and measured by hypr-qa's plain-hyprland profile (`qa-setcursor`).
 fn set(hypr: &Instance, theme: &str, size: u32) -> Result<()> {
     let reply = hypr.request_raw(&format!("setcursor {theme} {size}"))?;
     if reply.trim() != "ok" {
         bail!("setcursor {theme} {size}: {}", reply.trim());
+    }
+    let hidden = hypr.query("getoption cursor:invisible").map_or(true, |v| v["bool"].as_bool().unwrap_or(v["int"].as_i64().unwrap_or(0) != 0));
+    if !hidden {
+        for v in [true, false] {
+            set_invisible(hypr, v)?;
+            std::thread::sleep(REAPPLY_HOLD);
+        }
+    }
+    Ok(())
+}
+
+/// The runtime value of `cursor:invisible`, never the owner's config file.
+fn set_invisible(hypr: &Instance, v: bool) -> Result<()> {
+    let req = if hypr.lua() { format!("eval hl.config({{ cursor = {{ invisible = {v} }} }})") } else { format!("keyword cursor:invisible {v}") };
+    let reply = hypr.request_raw(&req)?;
+    if reply.trim() != "ok" {
+        bail!("{req}: {}", reply.trim());
     }
     Ok(())
 }
