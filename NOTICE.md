@@ -44,5 +44,10 @@ port the Hyprland adapter in the MasonRhodesDev fork of that repository
 (`typesafe_computer_use/hyprland/remote.py` and `tree_text.py` at `48fc540`),
 which is this repository's own author's work on top of it.
 
+## Noto Color Emoji
+
+`assets/robot-32.qoi` is U+1F916 (🤖) rendered from Noto Color Emoji 2.051 (Google,
+SIL Open Font License 1.1), scaled to 32 px.
+
 Full license text of both: see each project's LICENSE at the commits above;
 both are the standard MIT text also in this repository's LICENSE.

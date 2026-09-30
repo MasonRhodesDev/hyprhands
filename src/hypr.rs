@@ -107,7 +107,7 @@ impl Instance {
     }
 
     /// A dispatcher, the way `hyprctl dispatch <args>` runs one, in this instance's dialect.
-    fn dispatch(&self, args: &str) -> Result<()> {
+    pub fn dispatch(&self, args: &str) -> Result<()> {
         let reply = self.request_raw(&format!("dispatch {args}"))?;
         if reply.trim() != "ok" {
             bail!("dispatch {args}: {}", reply.trim());

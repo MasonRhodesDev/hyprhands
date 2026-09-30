@@ -25,6 +25,17 @@ The owner is at the controls when the cursor drifts more than `--tolerance`
 monitor. The first sign latches and every later input is refused. Creating
 `$XDG_RUNTIME_DIR/hyprhands-stop` does the same, explicitly.
 
+## What the owner sees
+
+While a session drives a monitor, hyprhands draws on it (layer-shell overlay, click-through,
+gone with the process): a frame around the monitor, blue while driving and amber once it has
+stopped; a 🤖 beside the pointer; a ring where each click lands and a trail when the pointer
+jumps there; and a caption saying what it is doing (a request's `caption` field, or the op
+itself). A desktop notification says when a session starts, stops and ends. The overlay is
+hidden for each capture, so agents never see it (about one frame per screenshot).
+`serve --no-overlay` and `--no-notify` turn them off; `hyprhands overlay-check` shows the
+overlay and confirms captures stay clean.
+
 ## Accessibility tree and screen text
 
 `{"op": "tree", "text": true}` walks the agent window's AT-SPI tree in-process

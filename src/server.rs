@@ -9,8 +9,11 @@
 
 use crate::a11y::{self, A11y};
 use crate::config::Config;
+use crate::cursor::RobotCursor;
 use crate::hypr::{self, EventHub, Instance, Monitor};
 use crate::keymap;
+use crate::notify::Notifier;
+use crate::overlay::{self, Overlay};
 use crate::screentext;
 use crate::takeover::Takeover;
 use crate::wl::Wl;
@@ -31,6 +34,34 @@ pub fn stop_file() -> PathBuf {
     hypr::runtime_dir().join("hyprhands-stop")
 }
 
+/// What a session shows the owner (both on by default; `serve --no-overlay` / `--no-notify`).
+pub struct Options {
+    pub tolerance: f64,
+    pub overlay: bool,
+    pub notify: bool,
+}
+
+/// Tells the owner, once, that hyprhands has stopped taking input, and why.
+struct Feedback {
+    overlay: Option<overlay::Remote>,
+    notifier: Notifier,
+    monitor: String,
+    announced: std::sync::atomic::AtomicBool,
+}
+
+impl Feedback {
+    fn stopped(&self, reason: &str) {
+        if self.announced.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        if let Some(o) = &self.overlay {
+            o.mode(overlay::Mode::Stopped);
+            o.caption(format!("stopped: {reason}"));
+        }
+        self.notifier.show(&format!("hyprhands stopped on {}", self.monitor), reason, 0, true);
+    }
+}
+
 pub struct Server {
     hypr: Instance,
     wl: Wl,
@@ -44,10 +75,14 @@ pub struct Server {
     /// what it chose to work in, whether its own window or one of the owner's. Without one, the
     /// agent's window is the driven workspace's most recently focused one.
     claimed: Option<String>,
+    overlay: Option<Overlay>,
+    /// Dropped last-but-one: puts the owner's cursor back.
+    _cursor: Option<RobotCursor>,
+    feedback: Arc<Feedback>,
 }
 
 impl Server {
-    pub fn start(monitor: Option<&str>, tolerance: f64) -> Result<Self> {
+    pub fn start(monitor: Option<&str>, opts: &Options) -> Result<Self> {
         let hypr = Instance::discover()?;
         let wl = Wl::connect()?;
         let hub = EventHub::start(&hypr)?;
@@ -60,10 +95,28 @@ impl Server {
         .ok_or_else(|| anyhow!("no monitor {monitor:?}; have {:?}", monitors.iter().map(|m| &m.name).collect::<Vec<_>>()))?;
         let config = Config::load(&hypr)?;
         let _ = std::fs::remove_file(stop_file()); // a press from an earlier session does not stop this one
-        let mut t = Takeover::new(tolerance);
+        let mut t = Takeover::new(opts.tolerance);
         t.baseline(hypr.cursor()?);
         let takeover = Arc::new(Mutex::new(t));
-        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None };
+        // Feedback is best effort: a session without an overlay or notifications still works.
+        let overlay = opts.overlay.then(|| Overlay::start(&monitor).ok()).flatten();
+        let cursor = opts.overlay.then(|| RobotCursor::install(&hypr).ok()).flatten();
+        if let Some(c) = &cursor {
+            restore_on_signal(c.restorer());
+        }
+        let feedback = Arc::new(Feedback {
+            overlay: overlay.as_ref().map(Overlay::remote),
+            notifier: Notifier::connect(opts.notify),
+            monitor: monitor.name.clone(),
+            announced: false.into(),
+        });
+        feedback.notifier.show(
+            &format!("hyprhands is driving {}", monitor.name),
+            "Move the mouse or switch monitors to take over; `hyprhands stop` stops it.",
+            0,
+            false,
+        );
+        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None, overlay, _cursor: cursor, feedback };
         server.watch();
         Ok(server)
     }
@@ -71,19 +124,27 @@ impl Server {
     /// Two watchers feed the takeover state between requests: the cursor, polled over the request
     /// socket, and the focused monitor, from the event stream.
     fn watch(&self) {
-        let (hypr, seat) = (self.hypr.clone(), self.takeover.clone());
+        let (hypr, seat, fb) = (self.hypr.clone(), self.takeover.clone(), self.feedback.clone());
         std::thread::spawn(move || loop {
             if let Ok(pos) = hypr.cursor() {
                 seat.lock().unwrap().cursor_seen(pos, Instant::now());
             }
+            let reason = if stop_file().exists() { Some("the panic file exists".to_owned()) } else { seat.lock().unwrap().reason().map(str::to_owned) };
+            if let Some(r) = reason {
+                fb.stopped(&r);
+            }
             std::thread::sleep(CURSOR_POLL);
         });
-        let (events, seat, driven) = (self.hub.subscribe(), self.takeover.clone(), self.monitor.name.clone());
+        let (events, seat, driven, fb) = (self.hub.subscribe(), self.takeover.clone(), self.monitor.name.clone(), self.feedback.clone());
         std::thread::spawn(move || {
             for (name, data) in events {
                 if name == "focusedmon" {
                     let focused = data.split(',').next().unwrap_or_default();
-                    seat.lock().unwrap().focused_monitor(focused, &driven, Instant::now());
+                    let mut t = seat.lock().unwrap();
+                    t.focused_monitor(focused, &driven, Instant::now());
+                    if let Some(r) = t.reason() {
+                        fb.stopped(r);
+                    }
                 }
             }
         });
@@ -134,6 +195,9 @@ impl Server {
                 bail!("refused: {reason}");
             }
             self.takeover.lock().unwrap().begin();
+            if let Some(o) = &self.feedback.overlay {
+                o.caption(req["caption"].as_str().map_or_else(|| describe(op, req), str::to_owned));
+            }
             let result = self.input(op, req);
             let cursor = self.hypr.cursor().ok();
             self.takeover.lock().unwrap().end(cursor, Instant::now());
@@ -173,7 +237,14 @@ impl Server {
         let started = Instant::now();
         let name = self.monitor.name.clone();
         let logical_w = region.map_or(self.monitor.width, |r| f64::from(r.2));
-        let frame = self.wl.capture(&name, region)?;
+        // The overlay is drawn on the monitor, so it would be in the capture: hide it until the
+        // compositor has drawn it hidden (a frame, ~12 ms), capture, and put it back.
+        let hid = self.overlay.as_ref().is_some_and(|o| o.set_visible(false, Duration::from_millis(100)));
+        let frame = self.wl.capture(&name, region);
+        if hid {
+            self.overlay.as_ref().map(|o| o.show());
+        }
+        let frame = frame?;
         let captured = started.elapsed();
         let (w, h) = (frame.width, frame.height);
         let qoi = frame.qoi()?;
@@ -236,7 +307,11 @@ impl Server {
         req[name].as_f64().ok_or_else(|| anyhow!("missing number {name:?}"))
     }
 
+    /// Warp the pointer to a point on the driven monitor, drawing the jump for the owner.
     fn move_to(&self, x: f64, y: f64) -> Result<()> {
+        if let (Some(o), Ok(from)) = (&self.feedback.overlay, self.hypr.cursor()) {
+            o.jump(self.to_local(from), (x, y));
+        }
         let (gx, gy) = self.to_global(x, y);
         self.hypr.move_cursor(gx, gy)
     }
@@ -272,9 +347,13 @@ impl Server {
         match op {
             "move" => self.move_to(Self::arg_f64(req, "x")?, Self::arg_f64(req, "y")?)?,
             "click" => {
-                self.move_to(Self::arg_f64(req, "x")?, Self::arg_f64(req, "y")?)?;
+                let (x, y) = (Self::arg_f64(req, "x")?, Self::arg_f64(req, "y")?);
+                self.move_to(x, y)?;
                 std::thread::sleep(CLICK_SETTLE);
                 self.wl.click(req["button"].as_str().unwrap_or("left"))?;
+                if let Some(o) = &self.feedback.overlay {
+                    o.click(x, y);
+                }
             }
             "scroll" => {
                 if let (Some(x), Some(y)) = (req["x"].as_f64(), req["y"].as_f64()) {
@@ -393,6 +472,49 @@ pub fn target<'a>(win: &'a Value, monitor: &Monitor) -> a11y::Target<'a> {
     }
 }
 
+impl Drop for Server {
+    fn drop(&mut self) {
+        if !self.feedback.announced.load(std::sync::atomic::Ordering::SeqCst) {
+            self.feedback.notifier.show(&format!("hyprhands is done with {}", self.monitor.name), "The session ended.", 4000, false);
+        }
+    }
+}
+
+/// What the caption says an input op is doing, when the client gave none: the op and its
+/// arguments, short. Typed text is shown (the owner is watching it land anyway), cut to a line.
+fn describe(op: &str, req: &Value) -> String {
+    let num = |k: &str| req[k].as_f64().map_or_else(|| "?".into(), |v| format!("{v:.0}"));
+    match op {
+        "click" => format!("click {}, {}{}", num("x"), num("y"), req["button"].as_str().filter(|b| *b != "left").map_or(String::new(), |b| format!(" ({b})"))),
+        "move" => format!("move to {}, {}", num("x"), num("y")),
+        "scroll" => {
+            let n = req["notches"].as_i64().unwrap_or(0);
+            format!("scroll {} {}", if n < 0 { "up" } else { "down" }, n.abs())
+        }
+        "key" => format!("key {}", req["combo"].as_str().unwrap_or_default()),
+        "type" => {
+            let text: String = req["text"].as_str().unwrap_or_default().chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            format!("type \u{201c}{text}\u{201d}")
+        }
+        "focus" | "bring" => format!("{op} window {}", req["address"].as_str().unwrap_or_default()),
+        "launch" | "spawn" => format!("{op} {}", req["argv"][0].as_str().unwrap_or_default()),
+        other => other.to_owned(),
+    }
+}
+
+/// SIGTERM, SIGINT or SIGHUP end the process without running `Drop`, so the owner's cursor is put
+/// back from a signal thread first. (A closed stdin, the usual end, runs `Drop` normally.)
+fn restore_on_signal(restore: impl Fn() + Send + 'static) {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else { return };
+    std::thread::spawn(move || {
+        if let Some(sig) = signals.forever().next() {
+            restore();
+            std::process::exit(128 + sig);
+        }
+    });
+}
+
 fn argv(req: &Value) -> Result<Vec<String>> {
     let argv: Vec<String> = req["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(expand_env)).collect();
     if argv.is_empty() {
@@ -441,5 +563,15 @@ mod tests {
         assert_eq!(expand_env("${HH_TEST}x"), "/home/xx");
         assert_eq!(shell_quote("--flag=a,b"), "--flag=a,b");
         assert_eq!(shell_quote("it's here"), r"'it'\''s here'");
+    }
+
+    #[test]
+    fn captions_say_what_each_input_does() {
+        use serde_json::json;
+        assert_eq!(describe("click", &json!({"x": 438.4, "y": 253.5})), "click 438, 254");
+        assert_eq!(describe("click", &json!({"x": 1, "y": 2, "button": "right"})), "click 1, 2 (right)");
+        assert_eq!(describe("scroll", &json!({"notches": -3})), "scroll up 3");
+        assert_eq!(describe("type", &json!({"text": "hi\nthere"})), "type \u{201c}hi there\u{201d}");
+        assert_eq!(describe("launch", &json!({"argv": ["chromium", "--x"]})), "launch chromium");
     }
 }

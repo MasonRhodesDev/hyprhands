@@ -1,14 +1,20 @@
 //! hyprhands: fast, safe hands on a Hyprland desktop for agent loops.
 //!
-//!   hyprhands serve [--monitor NAME] [--tolerance PX]   the framed stdio protocol (proto.rs)
+//!   hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify]
+//!                                                       the framed stdio protocol (proto.rs)
 //!   hyprhands doctor                                    what this session can and cannot do
 //!   hyprhands stop                                      refuse all input until the next session starts
+//!   hyprhands restore-cursor                            put back a cursor a killed session left
 //!   hyprhands bench [--monitor NAME] [--class C] [-n N] read-only timings; sends no input
 
 mod a11y;
 mod config;
 mod hypr;
+mod draw;
 mod keymap;
+mod cursor;
+mod notify;
+mod overlay;
 mod proto;
 mod screentext;
 mod server;
@@ -25,17 +31,21 @@ struct Args {
     tolerance: f64,
     n: usize,
     class: Option<String>,
+    overlay: bool,
+    notify: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut it = std::env::args().skip(1);
     let command = it.next().unwrap_or_else(|| "help".into());
-    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10, class: None };
+    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10, class: None, overlay: true, notify: true };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--monitor" => args.monitor = it.next(),
             "--tolerance" => args.tolerance = it.next().context("--tolerance needs a value")?.parse()?,
             "--class" => args.class = it.next(),
+            "--no-overlay" => args.overlay = false,
+            "--no-notify" => args.notify = false,
             "-n" => args.n = it.next().context("-n needs a value")?.parse()?,
             other => bail!("unknown argument {other:?}"),
         }
@@ -62,7 +72,7 @@ fn discover_wayland() {
 }
 
 fn serve(args: &Args) -> Result<()> {
-    let mut server = server::Server::start(args.monitor.as_deref(), args.tolerance)?;
+    let mut server = server::Server::start(args.monitor.as_deref(), &server::Options { tolerance: args.tolerance, overlay: args.overlay, notify: args.notify })?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
@@ -88,6 +98,9 @@ fn doctor() -> Result<()> {
     }
     let cfg = config::Config::load(&instance)?;
     ok("config", format!("{} binds, {} keyboards, read only", cfg.binds.len(), cfg.keyboards.len()));
+    if let Some(s) = cursor::restore_leftover(&instance) {
+        println!("[fix]  {:<12} a dead session left the robot cursor; restored {} {}", "cursor", s.theme, s.size);
+    }
     let opt = |name: &str| cfg.options.get(name).map(|v| v.get("bool").or(v.get("int")).or(v.get("str")).cloned().unwrap_or_default()).unwrap_or_default();
     ok(
         "cursor",
@@ -202,6 +215,59 @@ fn bench(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Whether the overlay stays out of hyprhands' own captures: the frame is put up on the monitor,
+/// captured, hidden and captured, shown again, and taken down. (Hyprland's `no_screen_share` layer
+/// rule is no alternative: it paints the layer black in the copy instead of leaving it out.)
+fn overlay_check(args: &Args) -> Result<()> {
+    let instance = hypr::Instance::discover()?;
+    let monitors = hypr::monitors(&instance)?;
+    let monitor = match &args.monitor {
+        Some(n) => monitors.iter().find(|m| &m.name == n).context("no such monitor")?,
+        None => monitors.iter().find(|m| m.focused).unwrap_or(&monitors[0]),
+    };
+    let mut wl = wl::Wl::connect()?;
+    let mut sample = |label: &str| -> Result<()> {
+        let frame = wl.capture(&monitor.name, None)?;
+        let rgb = frame.rgb()?;
+        let at = |x: u32, y: u32| {
+            let i = ((y * frame.width + x) * 3) as usize;
+            format!("#{:02x}{:02x}{:02x}", rgb[i], rgb[i + 1], rgb[i + 2])
+        };
+        let (w, h) = (frame.width, frame.height);
+        println!("{label:<34} top {}  left {}  bottom {}  centre {}", at(w / 2, 1), at(1, h / 2), at(w / 2, h - 2), at(w / 2, h / 2));
+        Ok(())
+    };
+    sample("before the overlay")?;
+    let ov = overlay::Overlay::start(monitor)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    sample("overlay up (driving: #00b4ff)")?;
+    let t = Instant::now();
+    let hidden = ov.set_visible(false, std::time::Duration::from_millis(200));
+    let hide_ms = t.elapsed().as_secs_f64() * 1e3;
+    sample(&format!("hidden ({hide_ms:.1} ms, drawn: {hidden})"))?;
+    ov.set_visible(true, std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    sample("shown again")?;
+    // The animated parts, for the eye: a caption, a jump and a click in the monitor's middle.
+    let (cx, cy) = (monitor.width / 2.0, monitor.height / 2.0);
+    let r = ov.remote();
+    r.caption("overlay-check: click the middle");
+    r.jump((cx - 200.0, cy - 150.0), (cx, cy));
+    r.click(cx, cy);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    r.mode(overlay::Mode::Stopped);
+    r.caption("overlay-check: stopped looks like this");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let t = Instant::now();
+    let hidden = ov.set_visible(false, std::time::Duration::from_millis(200));
+    sample(&format!("everything hidden ({:.1} ms, {hidden})", t.elapsed().as_secs_f64() * 1e3))?;
+    ov.show();
+    drop(ov);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sample("overlay gone")?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
     discover_wayland();
@@ -209,6 +275,14 @@ fn main() -> Result<()> {
         "serve" => serve(&args),
         "doctor" => doctor(),
         "bench" => bench(&args),
+        "overlay-check" => overlay_check(&args),
+        "restore-cursor" => {
+            match cursor::restore_leftover(&hypr::Instance::discover()?) {
+                Some(s) => eprintln!("hyprhands: cursor restored to {} {}", s.theme, s.size),
+                None => eprintln!("hyprhands: no cursor to restore"),
+            }
+            Ok(())
+        }
         // The panic file every session checks before each input; a new session clears it.
         "stop" => {
             std::fs::write(server::stop_file(), b"")?;
@@ -216,7 +290,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] | doctor | stop | bench [--monitor NAME] [--class C] [-n N]");
+            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify] | doctor | stop | restore-cursor | bench [--monitor NAME] [--class C] [-n N]");
             Ok(())
         }
     }
