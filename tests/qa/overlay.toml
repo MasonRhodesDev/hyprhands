@@ -60,6 +60,8 @@ do = { wait_ms = 400 }
   min_fraction = 0.9
 
 # Park the pointer: the arrow wears the robot badge, right there, with no lag to chase.
+# (Blocked on plain-hyprland for now: `hyprctl setcursor` does not change the pointer in that
+# guest for any theme, stock Adwaita included; reported to hypr-qa.)
 [[step]]
 id = "robot-cursor"
 do = { hyprhands = { op = "move", x = 400, y = 300 } }
@@ -87,13 +89,11 @@ id = "click"
 do = { hyprhands = { op = "click", x = 800, y = 500 } }
 settle_ms = 1200
 
-  [[step.expect]]                  # trail: the middle of the jump from (400, 300) to (800, 500)
-  at = "+0ms..+350ms"
-  check = "pixel"
+  [[step.expect]]                  # trail: the middle of the jump from (400, 300) to (800, 500); it is
+  at = "+0ms..+350ms"              # 55% opaque, so its colour depends on what is under it: check change
+  check = "changed"
   region = [590, 390, 20, 20]
-  color = "#00b4ff"
-  tolerance = 60
-  min_fraction = 0.05
+  min_px = 20
 
   [[step.expect]]                  # ring around the click
   at = "+0ms..+250ms"
@@ -114,13 +114,11 @@ settle_ms = 1200
   min_fraction = 0.03
   not = true
 
-  [[step.expect]]                  # trail gone again
+  [[step.expect]]                  # trail gone again: back to what was there before the jump
   at = "+700ms..+1000ms"
-  check = "pixel"
+  check = "changed"
   region = [590, 390, 20, 20]
-  color = "#00b4ff"
-  tolerance = 60
-  min_fraction = 0.05
+  min_px = 20
   not = true
 
   [[step.expect]]
@@ -195,7 +193,7 @@ settle_ms = 1200
 # (the signal path of the cursor restore).
 [[step]]
 id = "killed"
-do = { session = "pkill -TERM -f 'hyprhands serve' ; sleep 0.3" }
+do = { session = "pkill -TERM -x hyprhands; sleep 0.3" }
 settle_ms = 800
 
   [[step.expect]]
