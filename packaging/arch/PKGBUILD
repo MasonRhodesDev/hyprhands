@@ -1,5 +1,6 @@
 # Maintainer: Mason Rhodes <mrhodesdev@gmail.com>
-# Builds from a local clone: HYPRHANDS_SRC points at it (default: the repo this file lives in).
+# Builds the commit checked out in a local clone: HYPRHANDS_SRC points at it (default: the repo
+# this file lives in), so a branch under test is packaged by checking it out there.
 pkgname=hyprhands
 pkgver=0.1.0
 pkgrel=1
@@ -10,7 +11,8 @@ license=('MIT')
 depends=('gcc-libs' 'glibc' 'hyprland' 'at-spi2-core')
 makedepends=('cargo' 'git')
 options=('!lto' '!debug')
-source=("$pkgname::git+file://${HYPRHANDS_SRC:-$(realpath "$startdir/../..")}")
+_src="${HYPRHANDS_SRC:-$(realpath "$startdir/../..")}"
+source=("$pkgname::git+file://$_src#commit=$(git -C "$_src" rev-parse HEAD)")
 sha256sums=('SKIP')
 
 pkgver() {
