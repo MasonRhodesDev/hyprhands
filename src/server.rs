@@ -38,7 +38,7 @@ pub struct Server {
     monitor: Monitor,
     config: Config,
     takeover: Arc<Mutex<Takeover>>,
-    /// Connected on the first tree request, and again after a failure: the bus may come up later.
+    /// Connected at start when the bus is up, and again on a tree request after a failure.
     a11y: Option<A11y>,
     /// The window the agent launched, focused or brought, while it stays on the driven workspace:
     /// what it chose to work in, whether its own window or one of the owner's. Without one, the
@@ -63,7 +63,7 @@ impl Server {
         let mut t = Takeover::new(tolerance);
         t.baseline(hypr.cursor()?);
         let takeover = Arc::new(Mutex::new(t));
-        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: None, claimed: None };
+        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None };
         server.watch();
         Ok(server)
     }
@@ -140,7 +140,10 @@ impl Server {
             return result.map(|v| (v, None));
         }
         match op {
-            "hello" => Ok((json!({"monitor": self.monitor, "outputs": self.wl.output_names(), "instance": self.hypr.signature()}), None)),
+            "hello" => Ok((
+                json!({"monitor": self.monitor, "outputs": self.wl.output_names(), "instance": self.hypr.signature(), "a11y": self.a11y.is_some()}),
+                None,
+            )),
             "state" => Ok((
                 json!({
                     "window": self.window()?,
