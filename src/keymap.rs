@@ -127,6 +127,13 @@ pub fn parse_combo(combo: &str) -> Result<Combo> {
     Ok(Combo { mods, key: named_key(key).map_or_else(|| (*key).to_owned(), str::to_owned), keysym })
 }
 
+/// The real-modifier bit for a combo modifier name, in xkb's fixed order (Shift, Lock, Control,
+/// Mod1..Mod5): what `zwp_virtual_keyboard_v1.modifiers` takes as its depressed mask.
+pub fn mod_mask(name: &str) -> u32 {
+    let real = MODS.iter().find(|(n, _, _)| *n == name).map_or("", |m| m.2);
+    ["Shift", "Lock", "Control", "Mod1", "Mod2", "Mod3", "Mod4", "Mod5"].iter().position(|r| *r == real).map_or(0, |i| 1 << i)
+}
+
 /// The keymap for one combo: its modifier keys (`M_<name>`) plus the key (`KEY`).
 pub fn for_combo(combo: &Combo) -> Keymap {
     let mut entries = Vec::new();
@@ -175,5 +182,6 @@ mod tests {
         assert!(km.text.contains("key <M_ctrl> { [ Control_L ] };"));
         assert!(km.text.contains("modifier_map Control { <M_ctrl> };"));
         assert_eq!((km.codes["M_ctrl"], km.codes["KEY"]), (1, 2));
+        assert_eq!([mod_mask("shift"), mod_mask("ctrl"), mod_mask("alt"), mod_mask("super"), mod_mask("altgr")], [1, 4, 8, 64, 128]);
     }
 }

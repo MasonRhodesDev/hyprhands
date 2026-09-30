@@ -328,21 +328,25 @@ impl Wl {
         self.roundtrip()
     }
 
-    /// Press a combo: modifiers down in order, the key, then everything up in reverse.
+    /// Press a combo: modifiers down in order, the key, then everything up in reverse. A virtual
+    /// keyboard's modifier keys do not set modifier state by themselves: clients read Ctrl and
+    /// friends from the `modifiers` request, so each press and release updates it too (as wtype does).
     pub fn combo(&mut self, combo: &Combo) -> Result<()> {
         let km = keymap::for_combo(combo);
         self.load_keymap(&km)?;
-        let order: Vec<u32> = combo
-            .mods
-            .iter()
-            .map(|m| km.codes[&format!("M_{m}")])
-            .chain(std::iter::once(km.codes["KEY"]))
-            .collect();
-        for code in &order {
+        let mods: Vec<(u32, u32)> = combo.mods.iter().map(|m| (km.codes[&format!("M_{m}")], keymap::mod_mask(m))).collect();
+        let mut mask = 0;
+        for (code, bit) in &mods {
             self.key(*code, true);
+            mask |= bit;
+            self.keyboard.modifiers(mask, 0, 0, 0);
         }
-        for code in order.iter().rev() {
+        self.key(km.codes["KEY"], true);
+        self.key(km.codes["KEY"], false);
+        for (code, bit) in mods.iter().rev() {
             self.key(*code, false);
+            mask &= !bit;
+            self.keyboard.modifiers(mask, 0, 0, 0);
         }
         self.roundtrip()
     }
