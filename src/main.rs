@@ -81,7 +81,7 @@ fn doctor() -> Result<()> {
     let ok = |what: &str, detail: String| println!("[ok]   {what:<12} {detail}");
     let instance = hypr::Instance::discover()?;
     let sig = instance.signature();
-    ok("hyprland", format!("instance {}", &sig[..12.min(sig.len())]));
+    ok("hyprland", format!("instance {}, {} dispatchers", &sig[..12.min(sig.len())], if instance.lua() { "Lua" } else { "legacy" }));
     for m in hypr::monitors(&instance)? {
         ok("monitor", format!("{} at {},{} {}x{} scale {} ws {}", m.name, m.x, m.y, m.width, m.height, m.scale, m.workspace));
     }

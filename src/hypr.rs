@@ -10,10 +10,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Where one Hyprland instance's sockets live.
+/// Where one Hyprland instance's sockets live, and which dispatcher language it speaks: with a
+/// Lua config (0.55+), `dispatch` evaluates `hl.dispatch(<args>)`, so the legacy
+/// `movecursor 10 20` form is a Lua syntax error there.
 #[derive(Clone, Debug)]
 pub struct Instance {
     dir: PathBuf,
+    lua: bool,
 }
 
 impl Instance {
@@ -24,7 +27,7 @@ impl Instance {
         let hypr = runtime.join("hypr");
         if let Ok(sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
             if !sig.is_empty() {
-                return Ok(Self { dir: hypr.join(sig) });
+                return Ok(Self::at(hypr.join(sig)));
             }
         }
         let newest = std::fs::read_dir(&hypr)
@@ -33,7 +36,19 @@ impl Instance {
             .filter(|e| e.path().join(".socket.sock").exists())
             .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
             .ok_or_else(|| anyhow!("no running Hyprland instance under {}", hypr.display()))?;
-        Ok(Self { dir: newest.path() })
+        Ok(Self::at(newest.path()))
+    }
+
+    /// `hl.dsp.no_op()` is a harmless dispatch under a Lua config and an unknown dispatcher under a
+    /// hyprlang one.
+    fn at(dir: PathBuf) -> Self {
+        let mut i = Self { dir, lua: false };
+        i.lua = i.request_raw("dispatch hl.dsp.no_op()").is_ok_and(|r| r.trim() == "ok");
+        i
+    }
+
+    pub fn lua(&self) -> bool {
+        self.lua
     }
 
     pub fn signature(&self) -> String {
@@ -56,8 +71,43 @@ impl Instance {
         serde_json::from_str(&raw).with_context(|| format!("Hyprland answered {command} with non-JSON: {raw:.200}"))
     }
 
-    /// A dispatcher, the way `hyprctl dispatch <name> <args>` runs one.
-    pub fn dispatch(&self, args: &str) -> Result<()> {
+    /// Warp the cursor to a global logical point.
+    pub fn move_cursor(&self, x: i64, y: i64) -> Result<()> {
+        self.dispatch(&if self.lua { format!("hl.dsp.cursor.move({{ x = {x}, y = {y} }})") } else { format!("movecursor {x} {y}") })
+    }
+
+    pub fn focus_window(&self, address: &str) -> Result<()> {
+        self.dispatch(&if self.lua {
+            format!("hl.dsp.focus({{ window = {} }})", lua_str(&format!("address:{address}")))
+        } else {
+            format!("focuswindow address:{address}")
+        })
+    }
+
+    /// Move a window to a workspace without following it there.
+    pub fn move_window_silent(&self, address: &str, workspace: i64) -> Result<()> {
+        self.dispatch(&if self.lua {
+            format!(
+                "hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})",
+                lua_str(&workspace.to_string()),
+                lua_str(&format!("address:{address}"))
+            )
+        } else {
+            format!("movetoworkspacesilent {workspace},address:{address}")
+        })
+    }
+
+    /// Run a shell command whose windows open on `workspace` without taking focus there.
+    pub fn exec_on_workspace(&self, cmd: &str, workspace: i64) -> Result<()> {
+        self.dispatch(&if self.lua {
+            format!("hl.dsp.exec_cmd({}, {{ workspace = {} }})", lua_str(cmd), lua_str(&format!("{workspace} silent")))
+        } else {
+            format!("exec [workspace {workspace} silent] {cmd}")
+        })
+    }
+
+    /// A dispatcher, the way `hyprctl dispatch <args>` runs one, in this instance's dialect.
+    fn dispatch(&self, args: &str) -> Result<()> {
         let reply = self.request_raw(&format!("dispatch {args}"))?;
         if reply.trim() != "ok" {
             bail!("dispatch {args}: {}", reply.trim());
@@ -161,6 +211,24 @@ impl Monitor {
     }
 }
 
+/// A Lua string literal holding exactly `s`.
+fn lua_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            // Other control characters as decimal byte escapes; everything else is UTF-8 as is.
+            c if (c as u32) < 0x20 || c == '\u{7f}' => out.push_str(&format!("\\{:03}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub fn monitors(instance: &Instance) -> Result<Vec<Monitor>> {
     instance.query("monitors")?.as_array().ok_or_else(|| anyhow!("monitors: not a list"))?.iter().map(Monitor::from_json).collect()
 }
@@ -169,6 +237,12 @@ pub fn monitors(instance: &Instance) -> Result<Vec<Monitor>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn lua_strings_escape_quotes_backslashes_and_controls() {
+        assert_eq!(lua_str(r#"it's "q" \ ok"#), r#""it's \"q\" \\ ok""#);
+        assert_eq!(lua_str("a\nb\tc Wörld ✓"), "\"a\\nb\\009c Wörld ✓\"");
+    }
 
     #[test]
     fn a_rotated_scaled_monitor_reports_its_logical_box() {

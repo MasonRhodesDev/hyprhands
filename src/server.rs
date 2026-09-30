@@ -40,6 +40,10 @@ pub struct Server {
     takeover: Arc<Mutex<Takeover>>,
     /// Connected on the first tree request, and again after a failure: the bus may come up later.
     a11y: Option<A11y>,
+    /// The window the agent launched, focused or brought, while it stays on the driven workspace.
+    /// Without it the agent's window is the driven workspace's most recently focused one, which is
+    /// the owner's the moment they open something there.
+    claimed: Option<String>,
 }
 
 impl Server {
@@ -59,7 +63,7 @@ impl Server {
         let mut t = Takeover::new(tolerance);
         t.baseline(hypr.cursor()?);
         let takeover = Arc::new(Mutex::new(t));
-        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: None };
+        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: None, claimed: None };
         server.watch();
         Ok(server)
     }
@@ -101,6 +105,13 @@ impl Server {
     }
 
     fn window(&self) -> Result<Option<Value>> {
+        if let Some(addr) = &self.claimed {
+            let ws = hypr::monitors(&self.hypr)?.into_iter().find(|m| m.name == self.monitor.name).map(|m| m.workspace);
+            let clients = self.hypr.query("clients")?;
+            if clients.as_array().into_iter().flatten().any(|c| c["address"] == addr.as_str() && c["workspace"]["id"].as_i64() == ws) {
+                return self.client(addr);
+            }
+        }
         agent_window(&self.hypr, &self.monitor)
     }
 
@@ -224,13 +235,13 @@ impl Server {
 
     fn move_to(&self, x: f64, y: f64) -> Result<()> {
         let (gx, gy) = self.to_global(x, y);
-        self.hypr.dispatch(&format!("movecursor {gx} {gy}"))
+        self.hypr.move_cursor(gx, gy)
     }
 
     fn focus_agent_window(&self) -> Result<()> {
         if let Some(w) = self.window()? {
             if let Some(addr) = w["address"].as_str() {
-                self.hypr.dispatch(&format!("focuswindow address:{addr}"))?;
+                self.hypr.focus_window(addr)?;
             }
         }
         Ok(())
@@ -269,7 +280,11 @@ impl Server {
                 self.focus_agent_window()?;
                 self.wl.type_text(req["text"].as_str().unwrap_or_default())?;
             }
-            "focus" => self.hypr.dispatch(&format!("focuswindow address:{}", req["address"].as_str().unwrap_or_default()))?,
+            "focus" => {
+                let addr = req["address"].as_str().unwrap_or_default();
+                self.hypr.focus_window(addr)?;
+                self.claimed = Some(addr.to_owned());
+            }
             "bring" => {
                 let addr = req["address"].as_str().unwrap_or_default();
                 let ws = hypr::monitors(&self.hypr)?.into_iter().find(|m| m.name == self.monitor.name).map(|m| m.workspace);
@@ -277,10 +292,11 @@ impl Server {
                 let at = clients.as_array().into_iter().flatten().find(|c| c["address"] == addr).and_then(|c| c["workspace"]["id"].as_i64());
                 if let (Some(ws), Some(at)) = (ws, at) {
                     if ws != at {
-                        self.hypr.dispatch(&format!("movetoworkspacesilent {ws},address:{addr}"))?;
+                        self.hypr.move_window_silent(addr, ws)?;
                     }
                 }
-                self.hypr.dispatch(&format!("focuswindow address:{addr}"))?;
+                self.hypr.focus_window(addr)?;
+                self.claimed = Some(addr.to_owned());
             }
             "launch" => return self.launch(req),
             "spawn" => {
@@ -305,12 +321,13 @@ impl Server {
         let ws = hypr::monitors(&self.hypr)?.into_iter().find(|m| m.name == self.monitor.name).map_or(1, |m| m.workspace);
         let events = self.hub.subscribe();
         let cmd = argv.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ");
-        self.hypr.dispatch(&format!("exec [workspace {ws} silent] {cmd}"))?;
+        self.hypr.exec_on_workspace(&cmd, ws)?;
         let deadline = Instant::now() + LAUNCH_WAIT;
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             match events.recv_timeout(left) {
                 Ok((name, data)) if name == "openwindow" => {
                     let address = format!("0x{}", data.split(',').next().unwrap_or_default());
+                    self.claimed = Some(address.clone());
                     return Ok(json!({"address": address}));
                 }
                 Ok(_) => {}
