@@ -102,7 +102,7 @@ impl Server {
         let overlay = opts.overlay.then(|| Overlay::start(&monitor).ok()).flatten();
         let cursor = opts.overlay.then(|| RobotCursor::install(&hypr).ok()).flatten();
         if let Some(c) = &cursor {
-            restore_on_signal(c.restorer());
+            restore_on_signal(overlay.as_ref().map(Overlay::remote), c.restorer());
         }
         let feedback = Arc::new(Feedback {
             overlay: overlay.as_ref().map(Overlay::remote),
@@ -502,13 +502,17 @@ fn describe(op: &str, req: &Value) -> String {
     }
 }
 
-/// SIGTERM, SIGINT or SIGHUP end the process without running `Drop`, so the owner's cursor is put
-/// back from a signal thread first. (A closed stdin, the usual end, runs `Drop` normally.)
-fn restore_on_signal(restore: impl Fn() + Send + 'static) {
+/// SIGTERM, SIGINT or SIGHUP end the process without running `Drop`, so a signal thread takes the
+/// overlay down at once and then puts the owner's cursor back (which takes about a second).
+/// (A closed stdin, the usual end, runs `Drop` normally.)
+fn restore_on_signal(overlay: Option<overlay::Remote>, restore: impl Fn() + Send + 'static) {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else { return };
     std::thread::spawn(move || {
         if let Some(sig) = signals.forever().next() {
+            if let Some(o) = &overlay {
+                o.quit();
+            }
             restore();
             std::process::exit(128 + sig);
         }

@@ -90,6 +90,11 @@ impl Remote {
         let _ = self.0.send(Cmd::Jump(from, to));
     }
 
+    /// Take the overlay down now (a signal is ending the process).
+    pub fn quit(&self) {
+        let _ = self.0.send(Cmd::Quit);
+    }
+
     pub fn caption(&self, text: impl Into<String>) {
         let _ = self.0.send(Cmd::Caption(text.into()));
     }
