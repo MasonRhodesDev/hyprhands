@@ -13,6 +13,7 @@ compositor would swallow as a bind unless asked to.
 hyprhands doctor                     what this session can and cannot do
 hyprhands bench [--monitor NAME] [--class C]
                                      read-only timings, sends no input
+hyprhands stop                       refuse all input until the next session
 hyprhands serve [--monitor NAME]     the protocol (see src/proto.rs)
 ssh my-desktop hyprhands serve       the same, from another machine
 ```

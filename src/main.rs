@@ -2,6 +2,7 @@
 //!
 //!   hyprhands serve [--monitor NAME] [--tolerance PX]   the framed stdio protocol (proto.rs)
 //!   hyprhands doctor                                    what this session can and cannot do
+//!   hyprhands stop                                      refuse all input until the next session starts
 //!   hyprhands bench [--monitor NAME] [--class C] [-n N] read-only timings; sends no input
 
 mod a11y;
@@ -208,8 +209,14 @@ fn main() -> Result<()> {
         "serve" => serve(&args),
         "doctor" => doctor(),
         "bench" => bench(&args),
+        // The panic file every session checks before each input; a new session clears it.
+        "stop" => {
+            std::fs::write(server::stop_file(), b"")?;
+            eprintln!("hyprhands: stopped ({})", server::stop_file().display());
+            Ok(())
+        }
         _ => {
-            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] | doctor | bench [--monitor NAME] [--class C] [-n N]");
+            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] | doctor | stop | bench [--monitor NAME] [--class C] [-n N]");
             Ok(())
         }
     }
