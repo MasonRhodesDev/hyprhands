@@ -33,8 +33,16 @@ Taken from it:
 
 - The observation shape an agent loop needs: one display in logical points,
   the frontmost window, the focused field, labelled controls.
-- The AT-SPI role vocabulary mapped onto its tree walk, which hyprhands'
-  accessibility phase follows.
+- The OSWorld-shaped accessibility XML its `osworld/a11y.py` reads (role tags,
+  `st:`/`cp:`/`act:`/`attr:` namespaces), which hyprhands' tree emits so that
+  reader works unchanged.
+
+The tree walk (`src/a11y.rs`: showing-only descent, node and time caps, the
+`button` → `push-button` alias) and the screen-text rules (`src/screentext.rs`:
+deepest text only, viewport clipping, covered and visually-hidden text dropped)
+port the Hyprland adapter in the MasonRhodesDev fork of that repository
+(`typesafe_computer_use/hyprland/remote.py` and `tree_text.py` at `48fc540`),
+which is this repository's own author's work on top of it.
 
 Full license text of both: see each project's LICENSE at the commits above;
 both are the standard MIT text also in this repository's LICENSE.

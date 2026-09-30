@@ -7,9 +7,11 @@
 //! The server never writes the owner's config: it reads binds and options (config.rs) and uses
 //! only dispatchers that act on windows and the cursor.
 
+use crate::a11y::{self, A11y};
 use crate::config::Config;
 use crate::hypr::{self, EventHub, Instance, Monitor};
 use crate::keymap;
+use crate::screentext;
 use crate::takeover::Takeover;
 use crate::wl::Wl;
 use anyhow::{Result, anyhow, bail};
@@ -36,6 +38,8 @@ pub struct Server {
     monitor: Monitor,
     config: Config,
     takeover: Arc<Mutex<Takeover>>,
+    /// Connected on the first tree request, and again after a failure: the bus may come up later.
+    a11y: Option<A11y>,
 }
 
 impl Server {
@@ -55,7 +59,7 @@ impl Server {
         let mut t = Takeover::new(tolerance);
         t.baseline(hypr.cursor()?);
         let takeover = Arc::new(Mutex::new(t));
-        let server = Self { hypr, wl, hub, monitor, config, takeover };
+        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: None };
         server.watch();
         Ok(server)
     }
@@ -96,18 +100,14 @@ impl Server {
         self.takeover.lock().unwrap().reason().map(str::to_owned)
     }
 
-    /// The agent's window: the most recently focused one on the driven monitor's current
-    /// workspace, not Hyprland's active window, which follows the owner around the other monitors.
     fn window(&self) -> Result<Option<Value>> {
-        let ws = hypr::monitors(&self.hypr)?.into_iter().find(|m| m.name == self.monitor.name).map(|m| m.workspace);
+        agent_window(&self.hypr, &self.monitor)
+    }
+
+    /// Any window by address, wherever it is, shaped like `window()`'s.
+    fn client(&self, address: &str) -> Result<Option<Value>> {
         let clients = self.hypr.query("clients")?;
-        let here = clients
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|c| c["workspace"]["id"].as_i64() == ws && c["mapped"].as_bool().unwrap_or(true) && !c["hidden"].as_bool().unwrap_or(false))
-            .min_by_key(|c| c["focusHistoryID"].as_i64().unwrap_or(i64::MAX));
-        Ok(here.map(|c| {
+        Ok(clients.as_array().into_iter().flatten().find(|c| c["address"] == address).map(|c| {
             let (x, y) = self.to_local((c["at"][0].as_f64().unwrap_or(0.0), c["at"][1].as_f64().unwrap_or(0.0)));
             json!({
                 "address": c["address"], "class": c["class"], "title": c["title"], "pid": c["pid"],
@@ -139,6 +139,7 @@ impl Server {
                 None,
             )),
             "screenshot" => self.screenshot(req),
+            "tree" => self.tree(req),
             "config" => Ok((serde_json::to_value(&self.config)?, None)),
             "find_window" => {
                 let class = req["class"].as_str().unwrap_or_default();
@@ -168,6 +169,52 @@ impl Server {
                 "ms": {"capture": captured.as_secs_f64() * 1e3, "encode": (started.elapsed() - captured).as_secs_f64() * 1e3},
             }),
             Some(qoi),
+        ))
+    }
+
+    /// The agent window's (or `address`'s) accessibility tree as OSWorld XML, and with `"text": true`
+    /// its screen text as lines in capture pixels (null when the tree is too thin or capped to stand
+    /// in for OCR).
+    fn tree(&mut self, req: &Value) -> Result<(Value, Option<Vec<u8>>)> {
+        let started = Instant::now();
+        let win = match req["address"].as_str() {
+            Some(addr) => self.client(addr)?,
+            None => self.window()?,
+        };
+        let empty = |window: Value, a11y: bool| {
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            json!({"xml": a11y::Tree::default_xml(), "nodes": 0, "capped": false, "no_app": false, "window": window,
+                   "lines": null, "a11y": a11y, "ms": {"walk": 0.0, "total": ms}})
+        };
+        let Some(win) = win else {
+            return Ok((empty(Value::Null, self.a11y.is_some()), None));
+        };
+        if self.a11y.is_none() {
+            // No bus: an empty tree, and the client reads pixels, as doctor says.
+            match A11y::connect() {
+                Ok(a) => self.a11y = Some(a),
+                Err(_) => return Ok((empty(win["address"].clone(), false), None)),
+            }
+        }
+        let tree = match self.a11y.as_ref().map(|a| a.tree(&target(&win, &self.monitor))) {
+            Some(Ok(t)) => t,
+            Some(Err(e)) => {
+                self.a11y = None;
+                return Err(e);
+            }
+            None => unreachable!(),
+        };
+        let walked = started.elapsed();
+        let lines = (req["text"].as_bool().unwrap_or(false) && !tree.capped)
+            .then(|| screentext::lines(&tree, self.monitor.scale, self.monitor.width, self.monitor.height))
+            .filter(|l| l.len() >= screentext::MIN_LINES);
+        Ok((
+            json!({
+                "xml": tree.xml(), "nodes": tree.count, "capped": tree.capped, "no_app": tree.no_app,
+                "window": win["address"], "lines": lines, "a11y": true,
+                "ms": {"walk": walked.as_secs_f64() * 1e3, "total": started.elapsed().as_secs_f64() * 1e3},
+            }),
+            None,
         ))
     }
 
@@ -271,6 +318,40 @@ impl Server {
             }
         }
         Ok(json!({"address": null, "note": "launched, but no window opened in time (a single-instance app may have reused one)"}))
+    }
+}
+
+/// The agent's window: the most recently focused one on the driven monitor's current workspace,
+/// not Hyprland's active window, which follows the owner around the other monitors. Its frame is in
+/// the monitor's logical space.
+pub fn agent_window(hypr: &Instance, monitor: &Monitor) -> Result<Option<Value>> {
+    let ws = hypr::monitors(hypr)?.into_iter().find(|m| m.name == monitor.name).map(|m| m.workspace);
+    let clients = hypr.query("clients")?;
+    let here = clients
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["workspace"]["id"].as_i64() == ws && c["mapped"].as_bool().unwrap_or(true) && !c["hidden"].as_bool().unwrap_or(false))
+        .min_by_key(|c| c["focusHistoryID"].as_i64().unwrap_or(i64::MAX));
+    Ok(here.map(|c| {
+        let (x, y) = (c["at"][0].as_f64().unwrap_or(0.0) - monitor.x, c["at"][1].as_f64().unwrap_or(0.0) - monitor.y);
+        json!({
+            "address": c["address"], "class": c["class"], "title": c["title"], "pid": c["pid"],
+            "frame": [x, y, c["size"][0], c["size"][1]],
+        })
+    }))
+}
+
+/// What a tree walk needs to find a window's app and place its frames.
+pub fn target<'a>(win: &'a Value, monitor: &Monitor) -> a11y::Target<'a> {
+    let f = |i: usize| win["frame"][i].as_f64().unwrap_or(0.0);
+    a11y::Target {
+        pid: win["pid"].as_u64().unwrap_or(0) as u32,
+        title: win["title"].as_str().unwrap_or_default(),
+        class: win["class"].as_str().unwrap_or_default(),
+        origin: (f(0), f(1)),
+        width: f(2),
+        scale: monitor.scale,
     }
 }
 

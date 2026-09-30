@@ -2,12 +2,14 @@
 //!
 //!   hyprhands serve [--monitor NAME] [--tolerance PX]   the framed stdio protocol (proto.rs)
 //!   hyprhands doctor                                    what this session can and cannot do
-//!   hyprhands bench [--monitor NAME] [-n N]             read-only timings; sends no input
+//!   hyprhands bench [--monitor NAME] [--class C] [-n N] read-only timings; sends no input
 
+mod a11y;
 mod config;
 mod hypr;
 mod keymap;
 mod proto;
+mod screentext;
 mod server;
 mod takeover;
 mod wl;
@@ -21,16 +23,18 @@ struct Args {
     monitor: Option<String>,
     tolerance: f64,
     n: usize,
+    class: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
     let mut it = std::env::args().skip(1);
     let command = it.next().unwrap_or_else(|| "help".into());
-    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10 };
+    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10, class: None };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--monitor" => args.monitor = it.next(),
             "--tolerance" => args.tolerance = it.next().context("--tolerance needs a value")?.parse()?,
+            "--class" => args.class = it.next(),
             "-n" => args.n = it.next().context("-n needs a value")?.parse()?,
             other => bail!("unknown argument {other:?}"),
         }
@@ -85,6 +89,10 @@ fn doctor() -> Result<()> {
     ok("config", format!("{} binds, {} keyboards, read only", cfg.binds.len(), cfg.keyboards.len()));
     let wl = wl::Wl::connect()?;
     ok("wayland", format!("screencopy, virtual pointer and keyboard bound; outputs {:?}", wl.output_names()));
+    match a11y::A11y::connect().and_then(|a| a.app_count()) {
+        Ok(n) => ok("a11y", format!("AT-SPI bus up, {n} apps registered")),
+        Err(e) => println!("[warn] {:<12} {e:#}: trees come back empty; OCR only", "a11y"),
+    }
     Ok(())
 }
 
@@ -131,6 +139,53 @@ fn bench(args: &Args) -> Result<()> {
     report("to rgb", &mut conv);
     report("qoi encode", &mut enc);
     report("config load", &mut cfg);
+
+    let win = match &args.class {
+        // Any window by class, wherever it is: the walk only reads the bus, so it disturbs nothing.
+        Some(class) => instance.query("clients")?.as_array().into_iter().flatten().find(|c| c["class"] == class.as_str()).map(|c| {
+            let (x, y) = (c["at"][0].as_f64().unwrap_or(0.0) - monitor.x, c["at"][1].as_f64().unwrap_or(0.0) - monitor.y);
+            json!({"class": c["class"], "title": c["title"], "pid": c["pid"], "frame": [x, y, c["size"][0], c["size"][1]]})
+        }),
+        None => server::agent_window(&instance, monitor)?,
+    };
+    let Some(win) = win else {
+        println!("a11y tree          no window on {}", monitor.name);
+        return Ok(());
+    };
+    let a = match a11y::A11y::connect() {
+        Ok(a) => a,
+        Err(e) => {
+            println!("a11y tree          {e:#}");
+            return Ok(());
+        }
+    };
+    let (mut walk, mut xml, mut text) = (vec![], vec![], vec![]);
+    let mut last = None;
+    for _ in 0..args.n.max(1) {
+        let t = Instant::now();
+        let tree = a.tree(&server::target(&win, monitor))?;
+        walk.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        let x = tree.xml();
+        xml.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        let l = screentext::lines(&tree, monitor.scale, monitor.width, monitor.height);
+        text.push(t.elapsed().as_secs_f64() * 1e3);
+        last = Some((tree.count, tree.capped, tree.no_app, x.len(), l.len()));
+    }
+    if let Some((nodes, capped, no_app, bytes, lines)) = last {
+        println!(
+            "a11y tree of {} ({}): {nodes} nodes{}{}, XML {} KiB, {lines} text lines",
+            win["class"].as_str().unwrap_or("?"),
+            win["title"].as_str().unwrap_or("?").chars().take(40).collect::<String>(),
+            if capped { ", capped" } else { "" },
+            if no_app { ", app not on the bus" } else { "" },
+            bytes / 1024
+        );
+    }
+    report("a11y walk", &mut walk);
+    report("a11y xml", &mut xml);
+    report("screen text", &mut text);
     Ok(())
 }
 
@@ -142,7 +197,7 @@ fn main() -> Result<()> {
         "doctor" => doctor(),
         "bench" => bench(&args),
         _ => {
-            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] | doctor | bench [--monitor NAME] [-n N]");
+            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] | doctor | bench [--monitor NAME] [--class C] [-n N]");
             Ok(())
         }
     }
