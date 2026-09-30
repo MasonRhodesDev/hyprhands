@@ -1,0 +1,219 @@
+# What the owner sees while hyprhands drives: frame, robot cursor, jump trail, click ring,
+# captions, the capture blink, the stopped state, and the cleanup when the session dies.
+#
+# Run with hypr-qa (https://github.com/MasonRhodesDev/hypr-qa) on the KVM host, from a hyprhands
+# checkout built in release:  hypr-qa run tests/qa/overlay.toml
+#
+# Numbers come from src/overlay.rs and src/cursor.rs: a 4 px frame #00b4ff (amber #ffb000 once
+# stopped) at 0xe6 alpha, a 64 px ring fading over 420 ms, a trail shown 450 ms, an 18 px caption
+# for 4 s at the bottom, and a 24 px robot arrow whose badge (lower right, 14 px) is mostly
+# #94a6aa. The guest is plain-hyprland: Virtual-1, 1280x800, scale 1, cursor size 24.
+
+name     = "hyprhands-overlay"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[[setup]]
+push = { src = "../../target/release/hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[[setup]]
+session = "hyprhands --help >/dev/null 2>&1; hyprhands doctor"
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1"]
+
+# The session is up: the frame is on all four edges.
+[[step]]
+id = "frame-up"
+do = { wait_ms = 400 }
+
+  [[step.expect]]
+  at = "+0ms..+300ms"
+  check = "pixel"
+  region = [0, 0, 0, 4]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+
+  [[step.expect]]
+  at = "+0ms..+300ms"
+  check = "pixel"
+  region = [0, -4, 0, 4]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+
+  [[step.expect]]
+  at = "+0ms..+300ms"
+  check = "pixel"
+  region = [0, 0, 4, 0]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+
+  [[step.expect]]
+  at = "+0ms..+300ms"
+  check = "pixel"
+  region = [-4, 0, 4, 0]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+
+# Park the pointer: the arrow wears the robot badge, right there, with no lag to chase.
+[[step]]
+id = "robot-cursor"
+do = { hyprhands = { op = "move", x = 400, y = 300 } }
+settle_ms = 500
+
+  [[step.expect]]                  # the badge, at the arrow's lower right
+  at = "+50ms..+300ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [410, 310, 14, 14]
+  color = "#94a6aa"
+  tolerance = 28
+  min_fraction = 0.15
+
+  [[step.expect]]                  # caption for the move
+  at = "+100ms..+1500ms"
+  anchor = "ack"
+  check = "ocr"
+  region = [0, -100, 0, 100]
+  text = "move to 400, 300"
+
+# Jump and click: a trail from where the pointer was, then a ring at the click.
+[[step]]
+id = "click"
+do = { hyprhands = { op = "click", x = 800, y = 500 } }
+settle_ms = 1200
+
+  [[step.expect]]                  # trail: the middle of the jump from (400, 300) to (800, 500)
+  at = "+0ms..+350ms"
+  check = "pixel"
+  region = [590, 390, 20, 20]
+  color = "#00b4ff"
+  tolerance = 60
+  min_fraction = 0.05
+
+  [[step.expect]]                  # ring around the click
+  at = "+0ms..+250ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [768, 468, 64, 64]
+  color = "#00b4ff"
+  tolerance = 60
+  min_fraction = 0.03
+
+  [[step.expect]]                  # ring gone again
+  at = "+650ms..+900ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [768, 468, 64, 64]
+  color = "#00b4ff"
+  tolerance = 60
+  min_fraction = 0.03
+  not = true
+
+  [[step.expect]]                  # trail gone again
+  at = "+700ms..+1000ms"
+  check = "pixel"
+  region = [590, 390, 20, 20]
+  color = "#00b4ff"
+  tolerance = 60
+  min_fraction = 0.05
+  not = true
+
+  [[step.expect]]
+  at = "+100ms..+1500ms"
+  anchor = "ack"
+  check = "ocr"
+  region = [0, -100, 0, 100]
+  text = "click 800, 500"
+
+# A client's own words replace the generated caption.
+[[step]]
+id = "client-caption"
+do = { hyprhands = { op = "move", x = 420, y = 320, caption = "qa: open the settings menu" } }
+settle_ms = 800
+
+  [[step.expect]]
+  at = "+100ms..+1500ms"
+  anchor = "ack"
+  check = "ocr"
+  region = [0, -100, 0, 100]
+  text = "open the settings menu"
+
+# A capture hides the overlay for about a frame: measure whether that shows on screen at all,
+# and that everything comes back.
+[[step]]
+id = "capture-blink"
+do = { hyprhands = { op = "screenshot" } }
+settle_ms = 600
+
+  [[step.expect]]                  # informational: at least one recorded frame without the frame
+  at = "+0ms..+200ms"
+  check = "pixel"
+  region = [0, 0, 0, 4]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+  not = true
+  mode = "any"
+
+  [[step.expect]]                  # and it is back
+  at = "+300ms..+500ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [0, 0, 0, 4]
+  color = "#00b4ff"
+  tolerance = 48
+  min_fraction = 0.9
+
+# The panic file stops it: the frame turns amber and the caption says why.
+[[step]]
+id = "stopped"
+do = { session = "hyprhands stop" }
+settle_ms = 1200
+
+  [[step.expect]]
+  at = "+250ms..+1000ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [0, 0, 0, 4]
+  color = "#ffb000"
+  tolerance = 48
+  min_fraction = 0.9
+
+  [[step.expect]]
+  at = "+250ms..+1100ms"
+  anchor = "ack"
+  check = "ocr"
+  region = [0, -100, 0, 100]
+  text = "stopped"
+
+# The session is killed: the overlay goes with the process and the owner's cursor comes back
+# (the signal path of the cursor restore).
+[[step]]
+id = "killed"
+do = { session = "pkill -TERM -f 'hyprhands serve' ; sleep 0.3" }
+settle_ms = 800
+
+  [[step.expect]]
+  at = "+300ms..+700ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [0, 0, 0, 4]
+  color = "#ffb000"
+  tolerance = 48
+  min_fraction = 0.9
+  not = true
+
+  [[step.expect]]                  # the badge is gone from the pointer (still parked at 420, 320)
+  at = "+300ms..+700ms"
+  anchor = "ack"
+  check = "pixel"
+  region = [430, 330, 14, 14]
+  color = "#94a6aa"
+  tolerance = 28
+  min_fraction = 0.15
+  not = true
