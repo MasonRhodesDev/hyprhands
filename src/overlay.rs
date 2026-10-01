@@ -61,7 +61,7 @@ const RING_LIFE: f32 = 0.72;
 const RING_GAP: f32 = 0.14;
 const RINGS: u32 = 3;
 /// The tail: drawn out over `TAIL_DRAW`, then faded from its end over `TAIL_FADE` (seconds).
-const TAIL_DRAW: f32 = 0.22;
+const TAIL_DRAW: f32 = 0.12;
 const TAIL_FADE: f32 = 0.42;
 const TAIL_PAD: f32 = 10.0;
 const CAPTION_FOR: Duration = Duration::from_millis(4000);
