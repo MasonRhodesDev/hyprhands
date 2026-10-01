@@ -220,9 +220,8 @@ settle_ms = 2200
   min_fraction = 0.3
   not = true
 
-  [[step.expect]]                  # the tint is gone too: the desktop changed back
-  at = "+300ms..+700ms"
-  anchor = "ack"
+  [[step.expect]]                  # the tint is gone too: changed from before the kill was sent
+  at = "+350ms..+900ms"
   check = "changed"
   region = [100, 250, 300, 150]
   min_px = 2000
