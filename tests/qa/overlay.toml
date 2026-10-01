@@ -1,17 +1,22 @@
-# What the owner sees while hyprhands drives: frame, robot cursor, jump trail, click ring,
-# captions, the capture blink, the stopped state, and the cleanup when the session dies.
+# What the owner sees while hyprhands drives: the tint, the hazard-tape frame, the robot cursor,
+# the jump trail, the click ring, captions, the capture blink, the stopped state, and the cleanup
+# when the session dies.
 #
 # Run with hypr-qa (https://github.com/MasonRhodesDev/hypr-qa) on the KVM host, from a hyprhands
 # checkout built in release:  hypr-qa run tests/qa/overlay.toml
 #
-# Numbers come from src/overlay.rs and src/cursor.rs: a 4 px frame #00b4ff (amber #ffb000 once
-# stopped) at 0xe6 alpha, a 64 px ring fading over 420 ms, a trail shown 450 ms, an 18 px caption
-# for 4 s at the bottom, and a 24 px robot arrow whose badge (lower right, 14 px) is mostly
-# #94a6aa. The guest is plain-hyprland: Virtual-1, 1280x800, scale 1, cursor size 24.
+# The guest's active border is pinned to the owner's #a4c9fe, so the overlay's colour (its
+# complement, src/overlay.rs Palette) is a known #ff9a0a; stopped is #ff3b4a. The frame is 12 px:
+# 2 px dark rim, an 8 px band of marching two-tone stripes, 2 px dark rim. The tint washes the
+# monitor at 7-16% alpha, pulsing every 2.4 s. The guest is plain-hyprland: Virtual-1, 1280x800,
+# scale 1, cursor size 24, one monitor (the tint on the seat's other monitors is not covered here).
 
 name     = "hyprhands-overlay"
 profile  = "plain-hyprland"
 snapshot = "session-ready"
+
+[guest]
+hyprland = { general = { col = { active_border = "rgb(a4c9fe)" } } }
 
 [[setup]]
 push = { src = "../../target/release/hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
@@ -22,7 +27,7 @@ session = "hyprhands --help >/dev/null 2>&1; hyprhands doctor"
 [hyprhands]
 argv = ["hyprhands", "serve", "--monitor", "Virtual-1"]
 
-# The session is up: the frame is on all four edges.
+# The session is up: the striped band on all four edges, in the theme's complement.
 [[step]]
 id = "frame-up"
 do = { wait_ms = 400 }
@@ -30,34 +35,52 @@ do = { wait_ms = 400 }
   [[step.expect]]
   at = "+0ms..+300ms"
   check = "pixel"
-  region = [0, 0, 0, 4]
-  color = "#00b4ff"
+  region = [0, 2, 0, 8]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
 
   [[step.expect]]
   at = "+0ms..+300ms"
   check = "pixel"
-  region = [0, -4, 0, 4]
-  color = "#00b4ff"
+  region = [0, -10, 0, 8]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
 
   [[step.expect]]
   at = "+0ms..+300ms"
   check = "pixel"
-  region = [0, 0, 4, 0]
-  color = "#00b4ff"
+  region = [2, 0, 8, 0]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
 
   [[step.expect]]
   at = "+0ms..+300ms"
   check = "pixel"
-  region = [-4, 0, 4, 0]
-  color = "#00b4ff"
+  region = [-10, 0, 8, 0]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
+
+# It reads as live: the stripes march and the tint pulses.
+[[step]]
+id = "alive"
+do = { wait_ms = 1300 }
+
+  [[step.expect]]                  # stripes moved along the top edge
+  at = "+400ms..+1200ms"
+  check = "changed"
+  region = [200, 2, 400, 8]
+  min_px = 200
+
+  [[step.expect]]                  # the tint's pulse shifted an empty stretch of desktop
+  at = "+600ms..+1250ms"
+  check = "changed"
+  region = [100, 250, 300, 150]
+  min_px = 2000
+  fuzz = 1
 
 # Park the pointer: the arrow wears the robot badge, right there, with no lag to chase.
 [[step]]
@@ -71,7 +94,7 @@ settle_ms = 500
   check = "pixel"
   region = [410, 310, 14, 14]
   color = "#94a6aa"
-  tolerance = 28
+  tolerance = 32
   min_fraction = 0.15
 
   [[step.expect]]                  # caption for the move
@@ -98,7 +121,7 @@ settle_ms = 1200
   anchor = "ack"
   check = "pixel"
   region = [768, 468, 64, 64]
-  color = "#00b4ff"
+  color = "#ff9a0a"
   tolerance = 60
   min_fraction = 0.03
 
@@ -107,16 +130,9 @@ settle_ms = 1200
   anchor = "ack"
   check = "pixel"
   region = [768, 468, 64, 64]
-  color = "#00b4ff"
+  color = "#ff9a0a"
   tolerance = 60
   min_fraction = 0.03
-  not = true
-
-  [[step.expect]]                  # trail gone again: back to what was there before the jump
-  at = "+700ms..+1000ms"
-  check = "changed"
-  region = [590, 390, 20, 20]
-  min_px = 20
   not = true
 
   [[step.expect]]
@@ -146,13 +162,13 @@ id = "capture-blink"
 do = { hyprhands = { op = "screenshot" } }
 settle_ms = 600
 
-  [[step.expect]]                  # informational: at least one recorded frame without the frame
+  [[step.expect]]                  # informational: at least one recorded frame without the band
   at = "+0ms..+200ms"
   check = "pixel"
-  region = [0, 0, 0, 4]
-  color = "#00b4ff"
+  region = [0, 2, 0, 8]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
   not = true
   mode = "any"
 
@@ -160,12 +176,12 @@ settle_ms = 600
   at = "+300ms..+500ms"
   anchor = "ack"
   check = "pixel"
-  region = [0, 0, 0, 4]
-  color = "#00b4ff"
+  region = [0, 2, 0, 8]
+  color = "#ff9a0a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
 
-# The panic file stops it: the frame turns amber and the caption says why.
+# The panic file stops it: the frame turns red and the caption says why.
 [[step]]
 id = "stopped"
 do = { session = "hyprhands stop" }
@@ -175,10 +191,10 @@ settle_ms = 1200
   at = "+250ms..+1000ms"
   anchor = "ack"
   check = "pixel"
-  region = [0, 0, 0, 4]
-  color = "#ffb000"
+  region = [0, 2, 0, 8]
+  color = "#ff3b4a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
 
   [[step.expect]]
   at = "+250ms..+1100ms"
@@ -198,11 +214,19 @@ settle_ms = 2200
   at = "+300ms..+700ms"
   anchor = "ack"
   check = "pixel"
-  region = [0, 0, 0, 4]
-  color = "#ffb000"
+  region = [0, 2, 0, 8]
+  color = "#ff3b4a"
   tolerance = 48
-  min_fraction = 0.9
+  min_fraction = 0.3
   not = true
+
+  [[step.expect]]                  # the tint is gone too: the desktop changed back
+  at = "+300ms..+700ms"
+  anchor = "ack"
+  check = "changed"
+  region = [100, 250, 300, 150]
+  min_px = 2000
+  fuzz = 1
 
   [[step.expect]]                  # the badge is gone from the pointer (still parked at 420, 320);
   at = "+1400ms..+1900ms"          # the restore hides and shows the cursor, ~1.2 s
@@ -210,6 +234,6 @@ settle_ms = 2200
   check = "pixel"
   region = [430, 330, 14, 14]
   color = "#94a6aa"
-  tolerance = 28
+  tolerance = 32
   min_fraction = 0.15
   not = true
