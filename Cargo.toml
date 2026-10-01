@@ -16,6 +16,7 @@ rustix = { version = "1.1.5", features = ["fs", "shm", "mm", "event"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

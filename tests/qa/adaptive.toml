@@ -1,0 +1,28 @@
+# serve --theme adaptive: smooth, coloured as the complement of the owner's window border. The
+# guest's border is pinned to the owner's #a4c9fe, so the tape's bright stripe is a known #ff9a0a.
+# See overlay.toml for the default theme and everything else the overlay does.
+
+name     = "hyprhands-adaptive"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[guest]
+hyprland = { general = { col = { active_border = "rgb(a4c9fe)" } } }
+
+[[setup]]
+push = { src = "../../target/release/hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1", "--theme", "adaptive"]
+
+[[step]]
+id = "frame-up"
+do = { wait_ms = 400 }
+
+  [[step.expect]]
+  at = "+0ms..+300ms"
+  check = "pixel"
+  region = [0, 2, 0, 8]
+  color = "#ff9a0a"
+  tolerance = 48
+  min_fraction = 0.3

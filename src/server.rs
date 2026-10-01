@@ -14,6 +14,7 @@ use crate::hypr::{self, EventHub, Instance, Monitor};
 use crate::keymap;
 use crate::notify::{Lasts, Notifier};
 use crate::overlay::{self, Overlay};
+use crate::theme::Theme;
 use crate::screentext;
 use crate::takeover::Takeover;
 use crate::wl::Wl;
@@ -41,6 +42,8 @@ pub struct Options {
     pub overlay: bool,
     pub notify: bool,
     pub tint: bool,
+    /// A built-in theme name, a theme file, or a name in the owner's themes directory.
+    pub theme: String,
 }
 
 /// Tells the owner, once, that hyprhands has stopped taking input, and why.
@@ -112,13 +115,16 @@ impl Server {
         // Hyprland has one seat: the owner's pointer and keyboard are the agent's on every monitor,
         // so every monitor is tinted. (A compositor with a seat per agent would tint only the
         // driven monitor.)
-        let palette = overlay::Palette::against(config.theme_accent());
-        let overlay = opts.overlay.then(|| Overlay::start(&monitor, overlay::Role::Driven, palette, opts.tint).ok()).flatten();
+        let theme = Theme::load(&opts.theme, config.theme_accent()).unwrap_or_else(|e| {
+            eprintln!("hyprhands: {e:#}; using the construction theme");
+            Theme::construction()
+        });
+        let overlay = opts.overlay.then(|| Overlay::start(&monitor, overlay::Role::Driven, theme.clone(), opts.tint).ok()).flatten();
         let seat: Vec<Overlay> = if opts.overlay && opts.tint {
             hypr::monitors(&hypr)?
                 .iter()
                 .filter(|m| m.name != monitor.name)
-                .filter_map(|m| Overlay::start(m, overlay::Role::Seat, palette, true).ok())
+                .filter_map(|m| Overlay::start(m, overlay::Role::Seat, theme.clone(), true).ok())
                 .collect()
         } else {
             vec![]

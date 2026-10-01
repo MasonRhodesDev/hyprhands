@@ -25,6 +25,7 @@ impl Rgba {
     }
 }
 
+#[derive(Clone)]
 pub struct Canvas {
     pub w: u32,
     pub h: u32,
@@ -84,23 +85,6 @@ impl Canvas {
     pub fn disc(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) {
         self.shade((cx - r, cy - r, cx + r, cy + r), c, |x, y| {
             (x - cx).hypot(y - cy) - r
-        });
-    }
-
-    /// A line segment with round caps.
-    pub fn line(&mut self, a: (f32, f32), b: (f32, f32), width: f32, c: Rgba) {
-        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let len2 = (dx * dx + dy * dy).max(1e-6);
-        let half = width / 2.0;
-        let bounds = (
-            a.0.min(b.0) - half,
-            a.1.min(b.1) - half,
-            a.0.max(b.0) + half,
-            a.1.max(b.1) + half,
-        );
-        self.shade(bounds, c, |x, y| {
-            let t = (((x - a.0) * dx + (y - a.1) * dy) / len2).clamp(0.0, 1.0);
-            (x - (a.0 + t * dx)).hypot(y - (a.1 + t * dy)) - half
         });
     }
 
@@ -260,15 +244,6 @@ mod tests {
         assert_eq!(a(20, 20), 0, "hollow");
         assert_eq!(a(32, 20), 0xff, "on the ring");
         assert_eq!(a(39, 20), 0, "outside");
-    }
-
-    #[test]
-    fn a_line_covers_its_span_only() {
-        let mut c = Canvas::new(30, 10);
-        c.line((2.0, 5.0), (27.0, 5.0), 2.0, Rgba(0, 255, 0, 255));
-        let a = |x: u32, y: u32| c.px[(y * 30 + x) as usize] >> 24;
-        assert!(a(15, 4) > 0x80 && a(15, 5) > 0x80);
-        assert_eq!(a(15, 0), 0);
     }
 
     #[test]
