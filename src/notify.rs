@@ -54,8 +54,15 @@ impl Notifier {
         // Normal urgency throughout: most daemons keep a critical notice up whatever its timeout.
         hints.insert("urgency", Value::U8(1));
         hints.insert("desktop-entry", Value::from("hyprhands"));
-        if lasts == Lasts::Session {
-            hints.insert("resident", Value::Bool(true));
+        match lasts {
+            Lasts::Session => {
+                hints.insert("resident", Value::Bool(true));
+            }
+            // Gone once it expires: a daemon with a notification centre (swaync) otherwise keeps
+            // every expired notice in its history, and they pile up session after session.
+            Lasts::For(_) => {
+                hints.insert("transient", Value::Bool(true));
+            }
         }
         let expire = match lasts {
             Lasts::Session => 0,
