@@ -485,6 +485,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "zbus",

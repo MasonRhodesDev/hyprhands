@@ -43,7 +43,10 @@ pub struct Options {
 
 /// Tells the owner, once, that hyprhands has stopped taking input, and why.
 struct Feedback {
+    /// The driven monitor's overlay.
     overlay: Option<overlay::Remote>,
+    /// The tints on the seat's other monitors.
+    seat: Vec<overlay::Remote>,
     notifier: Notifier,
     monitor: String,
     announced: std::sync::atomic::AtomicBool,
@@ -53,6 +56,9 @@ impl Feedback {
     fn stopped(&self, reason: &str) {
         if self.announced.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
+        }
+        for o in &self.seat {
+            o.mode(overlay::Mode::Stopped);
         }
         if let Some(o) = &self.overlay {
             o.mode(overlay::Mode::Stopped);
@@ -76,6 +82,8 @@ pub struct Server {
     /// agent's window is the driven workspace's most recently focused one.
     claimed: Option<String>,
     overlay: Option<Overlay>,
+    /// Tints on the other monitors of the seat; dropped with the session.
+    _seat: Vec<Overlay>,
     /// Dropped last-but-one: puts the owner's cursor back.
     _cursor: Option<RobotCursor>,
     feedback: Arc<Feedback>,
@@ -99,13 +107,28 @@ impl Server {
         t.baseline(hypr.cursor()?);
         let takeover = Arc::new(Mutex::new(t));
         // Feedback is best effort: a session without an overlay or notifications still works.
-        let overlay = opts.overlay.then(|| Overlay::start(&monitor).ok()).flatten();
+        // Hyprland has one seat: the owner's pointer and keyboard are the agent's on every monitor,
+        // so every monitor is tinted. (A compositor with a seat per agent would tint only the
+        // driven monitor.)
+        let palette = overlay::Palette::against(config.theme_accent());
+        let overlay = opts.overlay.then(|| Overlay::start(&monitor, overlay::Role::Driven, palette).ok()).flatten();
+        let seat: Vec<Overlay> = if opts.overlay {
+            hypr::monitors(&hypr)?
+                .iter()
+                .filter(|m| m.name != monitor.name)
+                .filter_map(|m| Overlay::start(m, overlay::Role::Seat, palette).ok())
+                .collect()
+        } else {
+            vec![]
+        };
         let cursor = opts.overlay.then(|| RobotCursor::install(&hypr).ok()).flatten();
+        let all: Vec<overlay::Remote> = overlay.iter().chain(&seat).map(Overlay::remote).collect();
         if let Some(c) = &cursor {
-            restore_on_signal(overlay.as_ref().map(Overlay::remote), c.restorer());
+            restore_on_signal(all.clone(), c.restorer());
         }
         let feedback = Arc::new(Feedback {
             overlay: overlay.as_ref().map(Overlay::remote),
+            seat: seat.iter().map(Overlay::remote).collect(),
             notifier: Notifier::connect(opts.notify),
             monitor: monitor.name.clone(),
             announced: false.into(),
@@ -116,7 +139,7 @@ impl Server {
             0,
             false,
         );
-        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None, overlay, _cursor: cursor, feedback };
+        let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None, overlay, _seat: seat, _cursor: cursor, feedback };
         server.watch();
         Ok(server)
     }
@@ -241,8 +264,8 @@ impl Server {
         // compositor has drawn it hidden (a frame, ~12 ms), capture, and put it back.
         let hid = self.overlay.as_ref().is_some_and(|o| o.set_visible(false, Duration::from_millis(100)));
         let frame = self.wl.capture(&name, region);
-        if hid {
-            self.overlay.as_ref().map(|o| o.show());
+        if hid && let Some(o) = &self.overlay {
+            o.show();
         }
         let frame = frame?;
         let captured = started.elapsed();
@@ -505,12 +528,12 @@ fn describe(op: &str, req: &Value) -> String {
 /// SIGTERM, SIGINT or SIGHUP end the process without running `Drop`, so a signal thread takes the
 /// overlay down at once and then puts the owner's cursor back (which takes about a second).
 /// (A closed stdin, the usual end, runs `Drop` normally.)
-fn restore_on_signal(overlay: Option<overlay::Remote>, restore: impl Fn() + Send + 'static) {
+fn restore_on_signal(overlays: Vec<overlay::Remote>, restore: impl Fn() + Send + 'static) {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else { return };
     std::thread::spawn(move || {
         if let Some(sig) = signals.forever().next() {
-            if let Some(o) = &overlay {
+            for o in &overlays {
                 o.quit();
             }
             restore();

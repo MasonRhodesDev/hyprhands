@@ -11,6 +11,7 @@
 //!   the owner's layout and repeat settings).
 
 use crate::hypr::Instance;
+use crate::draw::Rgba;
 use crate::keymap::Combo;
 use anyhow::Result;
 use serde::Serialize;
@@ -31,7 +32,7 @@ const MASK: [(u32, &str); 8] = [
 const LOCKS: [&str; 2] = ["caps", "mod2"];
 
 /// Options that change what an input does.
-pub const OPTIONS: [&str; 12] = [
+pub const OPTIONS: [&str; 13] = [
     "input:follow_mouse",
     "input:mouse_refocus",
     "input:kb_layout",
@@ -44,6 +45,7 @@ pub const OPTIONS: [&str; 12] = [
     "cursor:warp_on_change_workspace",
     "cursor:warp_on_monitor_change",
     "cursor:warp_back_after_non_mouse_input",
+    "general:col.active_border",
 ];
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -124,6 +126,16 @@ impl Config {
         !v.is_some_and(|v| v["bool"].as_bool().unwrap_or(false) || v["int"].as_i64().unwrap_or(0) != 0)
     }
 
+    /// The owner's accent: the first colour of the active window border (`AARRGGBB`, possibly a
+    /// gradient such as `ffa4c9fe ff8d9199 45deg`), which the overlay turns around.
+    pub fn theme_accent(&self) -> Option<Rgba> {
+        let v = self.options.get("general:col.active_border")?;
+        let text = v["gradient"].as_str().or(v["str"].as_str())?;
+        let hex = text.split_whitespace().next()?.trim_start_matches("0x");
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        Some(Rgba((n >> 16) as u8, (n >> 8) as u8, n as u8, 0xff))
+    }
+
     /// The bind that would swallow `combo`, if any. Non-consuming binds still pass the key on, so
     /// they do not count.
     pub fn swallowed_by(&self, combo: &Combo) -> Option<&Bind> {
@@ -150,6 +162,15 @@ mod tests {
             .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_theme_accent_is_the_borders_first_colour() {
+        let mut c = cfg();
+        c.options.insert("general:col.active_border".into(), json!({"gradient": "ffa4c9fe ff8d9199 45deg"}));
+        assert_eq!(c.theme_accent(), Some(Rgba(0xa4, 0xc9, 0xfe, 0xff)));
+        c.options.insert("general:col.active_border".into(), json!({"gradient": "nonsense"}));
+        assert_eq!(c.theme_accent(), None);
     }
 
     #[test]

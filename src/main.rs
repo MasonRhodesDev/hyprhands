@@ -238,7 +238,8 @@ fn overlay_check(args: &Args) -> Result<()> {
         Ok(())
     };
     sample("before the overlay")?;
-    let ov = overlay::Overlay::start(monitor)?;
+    let palette = overlay::Palette::against(config::Config::load(&instance)?.theme_accent());
+    let ov = overlay::Overlay::start(monitor, overlay::Role::Driven, palette)?;
     std::thread::sleep(std::time::Duration::from_millis(300));
     sample("overlay up (driving: #00b4ff)")?;
     let t = Instant::now();
