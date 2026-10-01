@@ -27,14 +27,16 @@ monitor. The first sign latches and every later input is refused. Creating
 
 ## What the owner sees
 
-While a session drives a monitor, hyprhands draws on it (layer-shell overlay, click-through,
-gone with the process): a frame around the monitor, blue while driving and amber once it has
-stopped; a 🤖 beside the pointer; a ring where each click lands and a trail when the pointer
-jumps there; and a caption saying what it is doing (a request's `caption` field, or the op
-itself). A desktop notification says when a session starts, stops and ends. The overlay is
-hidden for each capture, so agents never see it (about one frame per screenshot).
-`serve --no-overlay` and `--no-notify` turn them off; `hyprhands overlay-check` shows the
-overlay and confirms captures stay clean.
+While a session drives a monitor, hyprhands makes it unmistakable (layer-shell overlay,
+click-through, gone with the process): a 12 px hazard-tape frame whose stripes keep marching, in
+the complement of the owner's border colour (red once stopped); the pointer becomes a robot
+cursor; a ring where each click lands and a trail when the pointer jumps there; and a caption
+saying what it is doing (a request's `caption` field, or the op itself). `--tint` also washes
+every monitor of the seat. One desktop notification per session says driving, then expires as
+stopped or done, and is never left behind. The overlay is hidden for each capture, so agents
+never see it (about one frame per screenshot). `serve --no-overlay` and `--no-notify` turn them
+off; `hyprhands overlay-check` shows the overlay and confirms captures stay clean; tests/qa holds
+the hypr-qa scenarios that check all of it in a VM.
 
 ## Accessibility tree and screen text
 

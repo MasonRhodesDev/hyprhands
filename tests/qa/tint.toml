@@ -1,0 +1,39 @@
+# serve --tint: the driven monitor (and every other monitor of the seat, not covered by this
+# one-monitor guest) is washed in the overlay colour at 7-16% alpha, pulsing every 2.4 s, and the
+# wash leaves with the session. See overlay.toml for the rest of the overlay.
+
+name     = "hyprhands-tint"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[guest]
+hyprland = { general = { col = { active_border = "rgb(a4c9fe)" } } }
+
+[[setup]]
+push = { src = "../../target/release/hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1", "--tint"]
+
+[[step]]
+id = "pulse"
+do = { wait_ms = 1500 }
+
+  [[step.expect]]                  # the pulse shifts an empty stretch of desktop
+  at = "+600ms..+1450ms"
+  check = "changed"
+  region = [100, 250, 300, 150]
+  min_px = 2000
+  fuzz = 1
+
+[[step]]
+id = "killed"
+do = { session = "pkill -TERM -x hyprhands; sleep 0.3" }
+settle_ms = 2200
+
+  [[step.expect]]                  # the wash is gone: changed from before the kill was sent
+  at = "+350ms..+900ms"
+  check = "changed"
+  region = [100, 250, 300, 150]
+  min_px = 2000
+  fuzz = 1

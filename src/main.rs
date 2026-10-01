@@ -1,6 +1,6 @@
 //! hyprhands: fast, safe hands on a Hyprland desktop for agent loops.
 //!
-//!   hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify]
+//!   hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify] [--tint]
 //!                                                       the framed stdio protocol (proto.rs)
 //!   hyprhands doctor                                    what this session can and cannot do
 //!   hyprhands stop                                      refuse all input until the next session starts
@@ -33,12 +33,13 @@ struct Args {
     class: Option<String>,
     overlay: bool,
     notify: bool,
+    tint: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut it = std::env::args().skip(1);
     let command = it.next().unwrap_or_else(|| "help".into());
-    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10, class: None, overlay: true, notify: true };
+    let mut args = Args { command, monitor: None, tolerance: server::DEFAULT_TOLERANCE, n: 10, class: None, overlay: true, notify: true, tint: false };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--monitor" => args.monitor = it.next(),
@@ -46,6 +47,7 @@ fn parse_args() -> Result<Args> {
             "--class" => args.class = it.next(),
             "--no-overlay" => args.overlay = false,
             "--no-notify" => args.notify = false,
+            "--tint" => args.tint = true,
             "-n" => args.n = it.next().context("-n needs a value")?.parse()?,
             other => bail!("unknown argument {other:?}"),
         }
@@ -72,7 +74,7 @@ fn discover_wayland() {
 }
 
 fn serve(args: &Args) -> Result<()> {
-    let mut server = server::Server::start(args.monitor.as_deref(), &server::Options { tolerance: args.tolerance, overlay: args.overlay, notify: args.notify })?;
+    let mut server = server::Server::start(args.monitor.as_deref(), &server::Options { tolerance: args.tolerance, overlay: args.overlay, notify: args.notify, tint: args.tint })?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
@@ -239,7 +241,7 @@ fn overlay_check(args: &Args) -> Result<()> {
     };
     sample("before the overlay")?;
     let palette = overlay::Palette::against(config::Config::load(&instance)?.theme_accent());
-    let ov = overlay::Overlay::start(monitor, overlay::Role::Driven, palette)?;
+    let ov = overlay::Overlay::start(monitor, overlay::Role::Driven, palette, args.tint)?;
     std::thread::sleep(std::time::Duration::from_millis(300));
     sample("overlay up (driving: #00b4ff)")?;
     let t = Instant::now();
@@ -291,7 +293,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify] | doctor | stop | restore-cursor | bench [--monitor NAME] [--class C] [-n N]");
+            eprintln!("usage: hyprhands serve [--monitor NAME] [--tolerance PX] [--no-overlay] [--no-notify] [--tint] | doctor | stop | restore-cursor | bench [--monitor NAME] [--class C] [-n N]");
             Ok(())
         }
     }

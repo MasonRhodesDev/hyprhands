@@ -1,8 +1,8 @@
 //! What the owner sees while hyprhands drives:
 //!
-//! - a tint over every monitor that shares the agent's seat (on Hyprland, all of them: it has one
-//!   seat, so the owner's pointer and keyboard are the agent's), slowly pulsing, saying the desktop
-//!   is in agent hands wherever the owner looks;
+//! - optionally (`serve --tint`), a tint over every monitor that shares the agent's seat (on
+//!   Hyprland, all of them: it has one seat, so the owner's pointer and keyboard are the agent's),
+//!   slowly pulsing, saying the desktop is in agent hands wherever the owner looks;
 //! - on the driven monitor, a hazard-tape frame: diagonal stripes that keep marching, between dark
 //!   rims, so it reads on any wallpaper and against any border colour, and reads as live;
 //! - a ring where each click lands, and a trail when the pointer jumps to get there;
@@ -214,13 +214,14 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn start(monitor: &Monitor, role: Role, palette: Palette) -> Result<Self> {
+    /// `tint`: wash the monitor too (a `Seat` overlay is only ever started with it on).
+    pub fn start(monitor: &Monitor, role: Role, palette: Palette, tint: bool) -> Result<Self> {
         let (tx, rx) = channel();
         let (ready_tx, ready_rx) = channel();
         let monitor = monitor.clone();
         let thread = std::thread::Builder::new()
             .name("hyprhands-overlay".into())
-            .spawn(move || match Painter::new(monitor, role, palette) {
+            .spawn(move || match Painter::new(monitor, role, palette, tint) {
                 Ok(mut p) => {
                     let _ = ready_tx.send(Ok(()));
                     p.run(rx);
@@ -395,6 +396,8 @@ struct Painter {
     layers: Vec<Layer>,
     role: Role,
     palette: Palette,
+    /// Whether this monitor is washed (off by default: the frame says it on the driven monitor).
+    tint: bool,
     /// Integer buffer scale: the monitor's scale rounded up, so text stays sharp at 1.5.
     bs: u32,
     monitor: Monitor,
@@ -409,7 +412,7 @@ struct Painter {
 }
 
 impl Painter {
-    fn new(monitor: Monitor, role: Role, palette: Palette) -> Result<Self> {
+    fn new(monitor: Monitor, role: Role, palette: Palette, tint: bool) -> Result<Self> {
         let conn =
             Connection::connect_to_env().context("overlay: connecting to the Wayland display")?;
         let (globals, mut queue) =
@@ -510,6 +513,7 @@ impl Painter {
             layers,
             role,
             palette,
+            tint,
             bs,
             monitor,
             font: (role == Role::Driven).then(caption_font).flatten(),
@@ -676,7 +680,8 @@ impl Painter {
             let t = now.duration_since(self.born).as_secs_f32();
             let level =
                 ((t / PULSE.as_secs_f32() * std::f32::consts::TAU).sin() * 0.5 + 0.5) * 255.0;
-            self.set(TINT_L, Content::Tint(self.mode, level.round() as u8));
+            let wash = if self.tint { Content::Tint(self.mode, level.round() as u8) } else { Content::Clear };
+            self.set(TINT_L, wash);
             if self.role == Role::Driven {
                 let phase = (t * STRIPE_PX_PER_S) as u32 % STRIPE;
                 for (i, side) in EDGES {

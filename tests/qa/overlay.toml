@@ -1,4 +1,4 @@
-# What the owner sees while hyprhands drives: the tint, the hazard-tape frame, the robot cursor,
+# What the owner sees while hyprhands drives: the hazard-tape frame, the robot cursor,
 # the jump trail, the click ring, captions, the capture blink, the stopped state, and the cleanup
 # when the session dies.
 #
@@ -7,8 +7,8 @@
 #
 # The guest's active border is pinned to the owner's #a4c9fe, so the overlay's colour (its
 # complement, src/overlay.rs Palette) is a known #ff9a0a; stopped is #ff3b4a. The frame is 12 px:
-# 2 px dark rim, an 8 px band of marching two-tone stripes, 2 px dark rim. The tint washes the
-# monitor at 7-16% alpha, pulsing every 2.4 s. The guest is plain-hyprland: Virtual-1, 1280x800,
+# 2 px dark rim, an 8 px band of marching two-tone stripes, 2 px dark rim. No tint by default
+# (tests/qa/tint.toml covers serve --tint). The guest is plain-hyprland: Virtual-1, 1280x800,
 # scale 1, cursor size 24, one monitor (the tint on the seat's other monitors is not covered here).
 
 name     = "hyprhands-overlay"
@@ -64,7 +64,7 @@ do = { wait_ms = 400 }
   tolerance = 48
   min_fraction = 0.3
 
-# It reads as live: the stripes march and the tint pulses.
+# It reads as live: the stripes march; and with no --tint, the desktop itself is left alone.
 [[step]]
 id = "alive"
 do = { wait_ms = 1300 }
@@ -75,12 +75,13 @@ do = { wait_ms = 1300 }
   region = [200, 2, 400, 8]
   min_px = 200
 
-  [[step.expect]]                  # the tint's pulse shifted an empty stretch of desktop
+  [[step.expect]]                  # no tint by default: an empty stretch of desktop stays put
   at = "+600ms..+1250ms"
   check = "changed"
   region = [100, 250, 300, 150]
   min_px = 2000
   fuzz = 1
+  not = true
 
 # Park the pointer: the arrow wears the robot badge, right there, with no lag to chase.
 [[step]]
@@ -219,13 +220,6 @@ settle_ms = 2200
   tolerance = 48
   min_fraction = 0.3
   not = true
-
-  [[step.expect]]                  # the tint is gone too: changed from before the kill was sent
-  at = "+350ms..+900ms"
-  check = "changed"
-  region = [100, 250, 300, 150]
-  min_px = 2000
-  fuzz = 1
 
   [[step.expect]]                  # the badge is gone from the pointer (still parked at 420, 320);
   at = "+1400ms..+1900ms"          # the restore hides and shows the cursor, ~1.2 s

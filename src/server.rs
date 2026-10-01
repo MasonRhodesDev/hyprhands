@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::cursor::RobotCursor;
 use crate::hypr::{self, EventHub, Instance, Monitor};
 use crate::keymap;
-use crate::notify::Notifier;
+use crate::notify::{Lasts, Notifier};
 use crate::overlay::{self, Overlay};
 use crate::screentext;
 use crate::takeover::Takeover;
@@ -34,11 +34,13 @@ pub fn stop_file() -> PathBuf {
     hypr::runtime_dir().join("hyprhands-stop")
 }
 
-/// What a session shows the owner (both on by default; `serve --no-overlay` / `--no-notify`).
+/// What a session shows the owner: the overlay and notifications by default (`serve --no-overlay`
+/// / `--no-notify`), and a tint over every monitor of the seat only on request (`--tint`).
 pub struct Options {
     pub tolerance: f64,
     pub overlay: bool,
     pub notify: bool,
+    pub tint: bool,
 }
 
 /// Tells the owner, once, that hyprhands has stopped taking input, and why.
@@ -64,7 +66,7 @@ impl Feedback {
             o.mode(overlay::Mode::Stopped);
             o.caption(format!("stopped: {reason}"));
         }
-        self.notifier.show(&format!("hyprhands stopped on {}", self.monitor), reason, 0, true);
+        self.notifier.show(&format!("hyprhands stopped on {}", self.monitor), reason, Lasts::For(10_000));
     }
 }
 
@@ -111,33 +113,31 @@ impl Server {
         // so every monitor is tinted. (A compositor with a seat per agent would tint only the
         // driven monitor.)
         let palette = overlay::Palette::against(config.theme_accent());
-        let overlay = opts.overlay.then(|| Overlay::start(&monitor, overlay::Role::Driven, palette).ok()).flatten();
-        let seat: Vec<Overlay> = if opts.overlay {
+        let overlay = opts.overlay.then(|| Overlay::start(&monitor, overlay::Role::Driven, palette, opts.tint).ok()).flatten();
+        let seat: Vec<Overlay> = if opts.overlay && opts.tint {
             hypr::monitors(&hypr)?
                 .iter()
                 .filter(|m| m.name != monitor.name)
-                .filter_map(|m| Overlay::start(m, overlay::Role::Seat, palette).ok())
+                .filter_map(|m| Overlay::start(m, overlay::Role::Seat, palette, true).ok())
                 .collect()
         } else {
             vec![]
         };
         let cursor = opts.overlay.then(|| RobotCursor::install(&hypr).ok()).flatten();
         let all: Vec<overlay::Remote> = overlay.iter().chain(&seat).map(Overlay::remote).collect();
-        if let Some(c) = &cursor {
-            restore_on_signal(all.clone(), c.restorer());
-        }
+        let notifier = Notifier::connect(opts.notify);
+        restore_on_signal(all, notifier.clone(), cursor.as_ref().map(RobotCursor::restorer));
         let feedback = Arc::new(Feedback {
             overlay: overlay.as_ref().map(Overlay::remote),
             seat: seat.iter().map(Overlay::remote).collect(),
-            notifier: Notifier::connect(opts.notify),
+            notifier,
             monitor: monitor.name.clone(),
             announced: false.into(),
         });
         feedback.notifier.show(
             &format!("hyprhands is driving {}", monitor.name),
             "Move the mouse or switch monitors to take over; `hyprhands stop` stops it.",
-            0,
-            false,
+            Lasts::Session,
         );
         let server = Self { hypr, wl, hub, monitor, config, takeover, a11y: A11y::connect().ok(), claimed: None, overlay, _seat: seat, _cursor: cursor, feedback };
         server.watch();
@@ -498,7 +498,7 @@ pub fn target<'a>(win: &'a Value, monitor: &Monitor) -> a11y::Target<'a> {
 impl Drop for Server {
     fn drop(&mut self) {
         if !self.feedback.announced.load(std::sync::atomic::Ordering::SeqCst) {
-            self.feedback.notifier.show(&format!("hyprhands is done with {}", self.monitor.name), "The session ended.", 4000, false);
+            self.feedback.notifier.show(&format!("hyprhands is done with {}", self.monitor.name), "The session ended.", Lasts::For(3000));
         }
     }
 }
@@ -526,9 +526,9 @@ fn describe(op: &str, req: &Value) -> String {
 }
 
 /// SIGTERM, SIGINT or SIGHUP end the process without running `Drop`, so a signal thread takes the
-/// overlay down at once and then puts the owner's cursor back (which takes about a second).
-/// (A closed stdin, the usual end, runs `Drop` normally.)
-fn restore_on_signal(overlays: Vec<overlay::Remote>, restore: impl Fn() + Send + 'static) {
+/// overlay and the session's notice down at once and then puts the owner's cursor back (which takes
+/// about a second). (A closed stdin, the usual end, runs `Drop` normally.)
+fn restore_on_signal(overlays: Vec<overlay::Remote>, notifier: Notifier, restore: Option<impl Fn() + Send + 'static>) {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else { return };
     std::thread::spawn(move || {
@@ -536,7 +536,10 @@ fn restore_on_signal(overlays: Vec<overlay::Remote>, restore: impl Fn() + Send +
             for o in &overlays {
                 o.quit();
             }
-            restore();
+            notifier.close();
+            if let Some(restore) = &restore {
+                restore();
+            }
             std::process::exit(128 + sig);
         }
     });
