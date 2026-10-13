@@ -372,7 +372,16 @@ impl A11y {
             p.get_interfaces(),
             p.get_attributes()
         );
-        let role = role_tag(&role?);
+        // accesskit (Slint, egui, …) serves GetRole but not GetRoleName; without
+        // this fallback every window of those toolkits is unreadable.
+        let role = match role {
+            Ok(name) => name,
+            Err(e) => match p.get_role().await {
+                Ok(role) => role.name().to_string(),
+                Err(_) => return Err(e),
+            },
+        };
+        let role = role_tag(&role);
         let ifaces = ifaces.unwrap_or_default();
         let states: Vec<String> = state
             .map(|s| s.iter().map(state_name).collect())
