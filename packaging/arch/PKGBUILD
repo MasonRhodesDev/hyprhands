@@ -1,45 +1,45 @@
 # Maintainer: Mason Rhodes <mrhodesdev@gmail.com>
-# Builds the commit checked out in a local clone: HYPRHANDS_SRC points at it (default: the repo
-# this file lives in), so a branch under test is packaged by checking it out there.
+#
+# Built in CI by MasonRhodesDev/packaging-workflows (arch-package.yml), one leg per arch=() entry;
+# each run uploads arch-package-<arch> as an artifact. CI builds a git-archive of the commit under
+# test in place of the release archive and recomputes the checksum, so the pinned sum only has to
+# match the v$pkgver archive once that tag exists (updpkgsums on release).
+# A local build of the checked-out commit does the same:
+#   git archive --format=tar.gz --prefix hyprhands-0.1.0/ -o packaging/arch/hyprhands-0.1.0.tar.gz HEAD
+#   cd packaging/arch && makepkg --skipchecksums
 pkgname=hyprhands
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Fast, safe hands on a Hyprland desktop for agent loops"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/MasonRhodesDev/hyprhands"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'hyprland' 'at-spi2-core')
 makedepends=('cargo' 'git')
 options=('!lto' '!debug')
-_src="${HYPRHANDS_SRC:-$(realpath "$startdir/../..")}"
-source=("$pkgname::git+file://$_src#commit=$(git -C "$_src" rev-parse HEAD)")
-sha256sums=('SKIP')
-
-pkgver() {
-  cd "$pkgname"
-  printf "%s.r%s.g%s" "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
-}
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('ff85934e412cf76562ea957bb380b1c3adcbd109089cc15ba8ccc0b6cc0b0e03')
 
 prepare() {
-  cd "$pkgname"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "$pkgname"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
   cargo build --frozen --release
 }
 
 check() {
-  cd "$pkgname"
+  cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
   cargo test --frozen --release
 }
 
 package() {
-  cd "$pkgname"
+  cd "$pkgname-$pkgver"
   install -Dm755 target/release/hyprhands "$pkgdir/usr/bin/hyprhands"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 NOTICE.md "$pkgdir/usr/share/licenses/$pkgname/NOTICE.md"

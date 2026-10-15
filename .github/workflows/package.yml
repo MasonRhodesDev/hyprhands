@@ -1,0 +1,16 @@
+name: Package
+
+on:
+  push:
+    branches: [main, overlay]
+  pull_request:
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arch:
+    uses: MasonRhodesDev/packaging-workflows/.github/workflows/arch-package.yml@v1
+    with:
+      pkgbuild-dir: packaging/arch
