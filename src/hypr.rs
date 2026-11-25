@@ -25,10 +25,10 @@ impl Instance {
     pub fn discover() -> Result<Self> {
         let runtime = runtime_dir();
         let hypr = runtime.join("hypr");
-        if let Ok(sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-            if !sig.is_empty() {
-                return Ok(Self::at(hypr.join(sig)));
-            }
+        if let Ok(sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+            && !sig.is_empty()
+        {
+            return Ok(Self::at(hypr.join(sig)));
         }
         let newest = std::fs::read_dir(&hypr)
             .with_context(|| format!("no Hyprland instances under {}", hypr.display()))?
@@ -142,8 +142,10 @@ impl Instance {
 /// waiting for its window share one socket.
 #[derive(Clone, Default)]
 pub struct EventHub {
-    listeners: Arc<Mutex<Vec<Sender<(String, String)>>>>,
+    listeners: Arc<Mutex<Vec<EventSender>>>,
 }
+
+type EventSender = Sender<(String, String)>;
 
 impl EventHub {
     pub fn start(instance: &Instance) -> Result<Self> {

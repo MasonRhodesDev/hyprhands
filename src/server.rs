@@ -346,10 +346,10 @@ impl Server {
     }
 
     fn focus_agent_window(&self) -> Result<()> {
-        if let Some(w) = self.window()? {
-            if let Some(addr) = w["address"].as_str() {
-                self.focus(addr)?;
-            }
+        if let Some(w) = self.window()?
+            && let Some(addr) = w["address"].as_str()
+        {
+            self.focus(addr)?;
         }
         Ok(())
     }
@@ -392,15 +392,15 @@ impl Server {
             }
             "key" => {
                 let combo = keymap::parse_combo(req["combo"].as_str().unwrap_or_default())?;
-                if let Some(bind) = self.config.swallowed_by(&combo) {
-                    if !req["allow_bind"].as_bool().unwrap_or(false) {
-                        bail!(
-                            "{} is the owner's compositor bind ({}{}); it would not reach the app. Pass allow_bind to trigger it.",
-                            bind.label(),
-                            bind.dispatcher,
-                            if bind.description.is_empty() { String::new() } else { format!(": {}", bind.description) }
-                        );
-                    }
+                if let Some(bind) = self.config.swallowed_by(&combo)
+                    && !req["allow_bind"].as_bool().unwrap_or(false)
+                {
+                    bail!(
+                        "{} is the owner's compositor bind ({}{}); it would not reach the app. Pass allow_bind to trigger it.",
+                        bind.label(),
+                        bind.dispatcher,
+                        if bind.description.is_empty() { String::new() } else { format!(": {}", bind.description) }
+                    );
                 }
                 self.focus_agent_window()?;
                 self.wl.combo(&combo)?;
@@ -419,10 +419,10 @@ impl Server {
                 let ws = hypr::monitors(&self.hypr)?.into_iter().find(|m| m.name == self.monitor.name).map(|m| m.workspace);
                 let clients = self.hypr.query("clients")?;
                 let at = clients.as_array().into_iter().flatten().find(|c| c["address"] == addr).and_then(|c| c["workspace"]["id"].as_i64());
-                if let (Some(ws), Some(at)) = (ws, at) {
-                    if ws != at {
-                        self.hypr.move_window_silent(addr, ws)?;
-                    }
+                if let (Some(ws), Some(at)) = (ws, at)
+                    && ws != at
+                {
+                    self.hypr.move_window_silent(addr, ws)?;
                 }
                 self.focus(addr)?;
                 self.claimed = Some(addr.to_owned());
