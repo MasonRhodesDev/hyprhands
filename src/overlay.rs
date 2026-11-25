@@ -10,9 +10,13 @@
 //! - optionally (`serve --tint`), a wash over every monitor that shares the agent's seat (on
 //!   Hyprland, all of them: it has one seat), slowly pulsing.
 //!
-//! A theme with `pixel` > 1 is drawn as chunky pixels: each layer is rendered at that fraction of
-//! its size, its alpha ordered-dithered (so fades become dither patterns, as on 8-bit hardware),
-//! and scaled back up by whole pixels.
+//! Every layer is drawn once, at the output's own scale (fractional when the compositor offers
+//! `wp_fractional_scale_v1`), and shown through a viewport at its logical size, so nothing is
+//! resampled on its way to the screen. A theme with `pixel` > 1 keeps an 8-bit look: the tape,
+//! the ripple and the tail are quantised to cells of `pixel` x `pixel` logical px, each cell's
+//! alpha ordered-dithered (so fades become dither patterns, as on 8-bit hardware) and filled as a
+//! square whose edges land on device pixels. Captions are never quantised: their text is drawn
+//! from the font's outlines at device resolution.
 //!
 //! Each monitor's overlay is its own Wayland connection on its own thread, so drawing never waits
 //! on a capture or an input and the other way round. Every surface is a layer-shell surface on the
@@ -35,6 +39,7 @@ use std::time::{Duration, Instant};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_buffer, wl_callback, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
@@ -220,20 +225,89 @@ enum Content {
     Clear,
     /// The whole monitor washed at a pulse level (0-255), as a 1x1 buffer the viewport stretches.
     Tint(Mode, u8),
+    Shape(Shape),
+    Caption(String, Mode),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Shape {
     /// One frame edge; `phase` is the stripes' march, in logical px.
     Edge(Side, Mode, u32),
     /// A click ripple, `ms` milliseconds in (quantised to the motion step).
     Ripple(u32),
     /// A jump's tail from `a` to `b` (layer-local logical px), `ms` milliseconds in.
     Tail((f32, f32), (f32, f32), u32),
-    Caption(String, Mode),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Scale(u32);
+
+impl Scale {
+    fn of(monitor: f64, fractional: bool) -> Self {
+        let s = if fractional { monitor } else { monitor.ceil() };
+        Self(((s * 120.0).round() as u32).max(120))
+    }
+
+    fn factor(self) -> f32 {
+        self.0 as f32 / 120.0
+    }
+
+    fn device(self, logical: u32) -> u32 {
+        (logical * self.0 + 60) / 120
+    }
+
+    fn step(self) -> u32 {
+        let (mut a, mut b) = (self.0, 120);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        120 / a
+    }
+
+    fn snap(self, logical: i32) -> i32 {
+        let k = self.step() as i32;
+        (logical as f32 / k as f32).round() as i32 * k
+    }
+
+    fn snap_up(self, logical: u32) -> u32 {
+        logical.div_ceil(self.step()).max(1) * self.step()
+    }
+}
+
+struct Cells {
+    canvas: Canvas,
+    p: u32,
+}
+
+impl Cells {
+    fn dithered(canvas: Canvas, p: u32) -> Self {
+        Self { canvas: dither(canvas), p }
+    }
+
+    fn fill(&self, scale: Scale, w: u32, h: u32) -> Canvas {
+        let edges = |n: u32, limit: u32| -> Vec<u32> { (0..=n).map(|i| scale.device(i * self.p).min(limit)).collect() };
+        let (xs, ys) = (edges(self.canvas.w, w), edges(self.canvas.h, h));
+        let mut out = Canvas::new(w, h);
+        for cy in 0..self.canvas.h as usize {
+            for cx in 0..self.canvas.w as usize {
+                let colour = self.canvas.px[cy * self.canvas.w as usize + cx];
+                if colour == 0 {
+                    continue;
+                }
+                for y in ys[cy]..ys[cy + 1] {
+                    out.px[(y * w + xs[cx]) as usize..(y * w + xs[cx + 1]) as usize].fill(colour);
+                }
+            }
+        }
+        out
+    }
 }
 
 struct Layer {
     surface: wl_surface::WlSurface,
     layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-    /// Only the tint has one: it stretches a 1x1 buffer over the whole monitor.
-    viewport: Option<wp_viewport::WpViewport>,
+    viewport: wp_viewport::WpViewport,
+    _fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     /// Configured size, logical px.
     size: Option<(u32, u32)>,
     want: Content,
@@ -257,6 +331,7 @@ struct State {
     outputs: Vec<(wl_output::WlOutput, Option<String>)>,
     /// Configures waiting to be acked: (layer index, serial, width, height).
     configures: Vec<(usize, u32, u32, u32)>,
+    preferred_scale: Option<u32>,
     closed: bool,
     frame_done: bool,
 }
@@ -272,8 +347,7 @@ struct Painter {
     theme: Theme,
     /// Whether this monitor is washed (off by default: the frame says it on the driven monitor).
     tint: bool,
-    /// Integer buffer scale: the monitor's scale rounded up, so text stays sharp at 1.5.
-    bs: u32,
+    scale: Scale,
     monitor: Monitor,
     font: Option<fontdue::Font>,
     mode: Mode,
@@ -298,6 +372,7 @@ impl Painter {
         let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 =
             globals.bind(&qh, 1..=4, ()).context("the compositor lacks zwlr_layer_shell_v1")?;
         let viewporter: wp_viewporter::WpViewporter = globals.bind(&qh, 1..=1, ()).context("the compositor lacks wp_viewporter")?;
+        let fractional: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
         for g in globals.contents().clone_list() {
             if g.interface == "wl_output" {
                 let o: wl_output::WlOutput = globals.registry().bind(g.name, g.version.min(4), &qh, state.outputs.len());
@@ -311,7 +386,7 @@ impl Painter {
             .find(|(_, n)| n.as_deref() == Some(monitor.name.as_str()))
             .map(|(o, _)| o.clone())
             .ok_or_else(|| anyhow!("overlay: no Wayland output named {}", monitor.name))?;
-        let bs = monitor.scale.ceil().max(1.0) as u32;
+        let scale = Scale::of(monitor.scale, fractional.is_some());
 
         use zwlr_layer_surface_v1::Anchor;
         let all = Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right;
@@ -319,18 +394,14 @@ impl Painter {
         let mut specs = vec![(all, (0, 0), Content::Clear)];
         if role == Role::Driven {
             for (_, side) in EDGES {
-                let (anchor, size) = match side {
-                    Side::Top => (Anchor::Top | Anchor::Left | Anchor::Right, (0, EDGE)),
-                    Side::Bottom => (Anchor::Bottom | Anchor::Left | Anchor::Right, (0, EDGE)),
-                    Side::Left => (Anchor::Left | Anchor::Top | Anchor::Bottom, (EDGE, 0)),
-                    Side::Right => (Anchor::Right | Anchor::Top | Anchor::Bottom, (EDGE, 0)),
-                };
-                specs.push((anchor, size, Content::Edge(side, Mode::Driving, 0)));
+                let (anchor, size) = edge_layer(side, scale);
+                specs.push((anchor, size, Content::Shape(Shape::Edge(side, Mode::Driving, 0))));
             }
+            let ripple = scale.snap_up(RIPPLE);
             specs.extend([
-                (corner, (RIPPLE, RIPPLE), Content::Clear),
+                (corner, (ripple, ripple), Content::Clear),
                 (corner, (1, 1), Content::Clear),
-                (Anchor::Bottom, (1, 1), Content::Clear),
+                (Anchor::Bottom | Anchor::Left, (1, 1), Content::Clear),
             ]);
         }
         let empty: wl_region::WlRegion = compositor.create_region(&qh, ());
@@ -338,20 +409,15 @@ impl Painter {
         for (i, (anchor, (w, h), want)) in specs.into_iter().enumerate() {
             let surface = compositor.create_surface(&qh, ());
             surface.set_input_region(Some(&empty)); // click-through
-            let viewport = (i == TINT_L).then(|| viewporter.get_viewport(&surface, &qh, ()));
-            if viewport.is_none() {
-                surface.set_buffer_scale(bs as i32);
-            }
+            let viewport = viewporter.get_viewport(&surface, &qh, ());
+            let fractional = fractional.as_ref().map(|f| f.get_fractional_scale(&surface, &qh, ()));
             let layer = layer_shell.get_layer_surface(&surface, Some(&output), zwlr_layer_shell_v1::Layer::Overlay, NAMESPACE.into(), &qh, i);
             layer.set_anchor(anchor);
             layer.set_size(w, h);
             layer.set_exclusive_zone(-1); // over everything, reserving nothing
             layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
-            if i == CAPTION_L {
-                layer.set_margin(0, 0, CAPTION_MARGIN, 0);
-            }
             surface.commit();
-            layers.push(Layer { surface, layer, viewport, size: None, want, shown: None, buffer: None });
+            layers.push(Layer { surface, layer, viewport, _fractional: fractional, size: None, want, shown: None, buffer: None });
         }
         empty.destroy();
         let now = Instant::now();
@@ -365,7 +431,7 @@ impl Painter {
             role,
             theme,
             tint,
-            bs,
+            scale,
             monitor,
             font: (role == Role::Driven).then(caption_font).flatten(),
             mode: Mode::Driving,
@@ -389,12 +455,29 @@ impl Painter {
             if l.size != Some((w, h)) {
                 l.size = Some((w, h));
                 l.shown = None; // repaint at the new size
-                if let Some(v) = &l.viewport {
-                    v.set_destination(w as i32, h as i32);
-                }
+                l.viewport.set_destination(w as i32, h as i32);
             }
         }
         self.paint_all()
+    }
+
+    fn apply_scale(&mut self) {
+        let Some(s) = self.state.preferred_scale.take().map(Scale) else { return };
+        if s == self.scale {
+            return;
+        }
+        self.scale = s;
+        for l in &mut self.layers {
+            l.shown = None;
+        }
+        if self.role == Role::Driven {
+            for (i, side) in EDGES {
+                let (_, (w, h)) = edge_layer(side, s);
+                self.resize(i, w, h);
+            }
+            let ripple = s.snap_up(RIPPLE);
+            self.resize(RIPPLE_L, ripple, ripple);
+        }
     }
 
     /// Paint every configured layer whose content changed since it was last drawn.
@@ -406,7 +489,7 @@ impl Painter {
             if l.shown.as_ref() == Some(&want) {
                 continue;
             }
-            let canvas = if l.viewport.is_some() { self.render_tint(&want) } else { self.paint(&want, w, h) };
+            let canvas = self.paint(&want, w, h);
             let buf = Shm::upload(&self.shm, &self.qh, &canvas)?;
             let l = &mut self.layers[i];
             l.surface.attach(Some(&buf.buffer), 0, 0);
@@ -419,39 +502,33 @@ impl Painter {
         Ok(())
     }
 
-    /// The tint's single pixel; the viewport stretches it over the monitor.
-    fn render_tint(&self, content: &Content) -> Canvas {
+    /// A layer's buffer for a `w` x `h` logical px layer. Clear and the tint are a single pixel the
+    /// viewport stretches; everything else is drawn at device px.
+    fn paint(&self, content: &Content, w: u32, h: u32) -> Canvas {
+        let (dw, dh) = (self.scale.device(w), self.scale.device(h));
+        let p = self.theme.pixel;
         match content {
+            Content::Clear => Canvas::new(1, 1),
             Content::Tint(m, level) => {
                 let a = TINT_LOW + (TINT_HIGH - TINT_LOW) * f32::from(*level) / 255.0;
                 let colour = if *m == Mode::Driving { self.theme.tint } else { self.theme.stopped[0] };
                 Canvas::filled(1, 1, colour.with_alpha(a))
             }
-            _ => Canvas::new(1, 1),
+            Content::Caption(text, mode) => self.caption(text, *mode, dw, dh, self.scale.factor()),
+            Content::Shape(s) if p <= 1 => self.shape(s, (w, h), dw, dh, self.scale.factor()),
+            Content::Shape(s) => Cells::dithered(self.shape(s, (w, h), w.div_ceil(p), h.div_ceil(p), 1.0 / p as f32), p).fill(self.scale, dw, dh),
         }
     }
 
-    /// A layer's buffer: drawn directly at buffer scale for a smooth theme; for an 8-bit one,
-    /// drawn at one canvas pixel per theme pixel, dithered, and scaled up by whole pixels.
-    fn paint(&self, content: &Content, w: u32, h: u32) -> Canvas {
-        let (bw, bh) = (w * self.bs, h * self.bs);
-        let p = self.theme.pixel;
-        if p <= 1 {
-            return self.render(content, bw, bh, self.bs as f32);
-        }
-        let small = self.render(content, w.div_ceil(p), h.div_ceil(p), 1.0 / p as f32);
-        upscale(&dither(small), p * self.bs, bw, bh)
-    }
-
-    /// Draw `content` on a `cw` x `ch` canvas where one logical px is `u` canvas px.
-    fn render(&self, content: &Content, cw: u32, ch: u32, u: f32) -> Canvas {
+    /// Draw `shape` for a `logical` size layer on a `cw` x `ch` canvas where one logical px is `u`
+    /// canvas px.
+    fn shape(&self, shape: &Shape, logical: (u32, u32), cw: u32, ch: u32, u: f32) -> Canvas {
         let t = &self.theme;
-        match content {
-            Content::Clear | Content::Tint(..) => Canvas::new(cw, ch),
-            Content::Edge(side, mode, phase) => edge_canvas(*side, t.frame(*mode), t.rim, cw, ch, u, *phase),
-            Content::Ripple(ms) => {
+        match shape {
+            Shape::Edge(side, mode, phase) => edge_canvas(*side, t.frame(*mode), t.rim, cw, ch, u, *phase),
+            Shape::Ripple(ms) => {
                 let mut c = Canvas::new(cw, ch);
-                let (cx, cy) = (cw as f32 / 2.0, ch as f32 / 2.0);
+                let (cx, cy) = (logical.0 as f32 / 2.0 * u, logical.1 as f32 / 2.0 * u);
                 let s = *ms as f32 / 1000.0;
                 // The splash: a drop that lands and is swallowed.
                 if s < 0.16 {
@@ -472,7 +549,7 @@ impl Painter {
                 }
                 c
             }
-            Content::Tail(a, b, ms) => {
+            Shape::Tail(a, b, ms) => {
                 let mut c = Canvas::new(cw, ch);
                 let s = *ms as f32 / 1000.0;
                 let head = (s / TAIL_DRAW).min(1.0);
@@ -494,27 +571,35 @@ impl Painter {
                 c.disc(hx, hy, 5.5 * u, t.trail);
                 c
             }
-            Content::Caption(text, mode) => {
-                let mut c = Canvas::new(cw, ch);
-                let Some(font) = &self.font else { return c };
-                let accent = if *mode == Mode::Driving { t.caption_border } else { t.stopped[0] };
-                let b = (CAPTION_BORDER * u).max(1.0);
-                let radius = if t.pixel > 1 { 0.0 } else { 10.0 * u };
-                c.rounded_rect(0.0, 0.0, cw as f32, ch as f32, radius, accent);
-                c.rounded_rect(b, b, cw as f32 - 2.0 * b, ch as f32 - 2.0 * b, (radius - b).max(0.0), t.caption_bg);
-                let px = t.caption_px * u;
-                let (asc, desc) = font.horizontal_line_metrics(px).map_or((px * 0.8, -px * 0.2), |m| (m.ascent, m.descent));
-                let baseline = (ch as f32 + asc + desc) / 2.0;
-                let fg = if *mode == Mode::Driving { t.caption_fg } else { t.stopped[1] };
-                c.text(font, px, CAPTION_PAD * u, baseline, text, fg);
-                c
-            }
         }
+    }
+
+    fn caption(&self, text: &str, mode: Mode, cw: u32, ch: u32, u: f32) -> Canvas {
+        let t = &self.theme;
+        let mut c = Canvas::new(cw, ch);
+        let Some(font) = &self.font else { return c };
+        let accent = if mode == Mode::Driving { t.caption_border } else { t.stopped[0] };
+        let b = (CAPTION_BORDER * u).round().max(1.0);
+        let radius = if t.pixel > 1 { 0.0 } else { 10.0 * u };
+        c.rounded_rect(0.0, 0.0, cw as f32, ch as f32, radius, accent);
+        c.rounded_rect(b, b, cw as f32 - 2.0 * b, ch as f32 - 2.0 * b, (radius - b).max(0.0), t.caption_bg);
+        let px = t.caption_px * u;
+        let (asc, desc) = font.horizontal_line_metrics(px).map_or((px * 0.8, -px * 0.2), |m| (m.ascent, m.descent));
+        let baseline = ((ch as f32 + asc + desc) / 2.0).round();
+        let x = ((cw as f32 - draw::text_width(font, px, text)) / 2.0).round();
+        let fg = if mode == Mode::Driving { t.caption_fg } else { t.stopped[1] };
+        c.text(font, px, x, baseline, text, fg);
+        c
     }
 
     /// Move a top-left-anchored layer so its top-left is at (x, y), logical px on the monitor.
     fn place(&mut self, i: usize, x: i32, y: i32) {
         self.layers[i].layer.set_margin(y.max(0), 0, 0, x.max(0));
+        self.layers[i].surface.commit();
+    }
+
+    fn place_bottom(&mut self, i: usize, x: i32, bottom: i32) {
+        self.layers[i].layer.set_margin(0, 0, bottom.max(0), x.max(0));
         self.layers[i].surface.commit();
     }
 
@@ -540,7 +625,7 @@ impl Painter {
                 let step = self.theme.pixel.max(1);
                 let phase = ((t * STRIPE_PX_PER_S) as u32 / step * step) % STRIPE as u32;
                 for (i, side) in EDGES {
-                    self.set(i, Content::Edge(side, self.mode, phase));
+                    self.set(i, Content::Shape(Shape::Edge(side, self.mode, phase)));
                 }
             }
         }
@@ -557,7 +642,7 @@ impl Painter {
                     self.ripple_since = None;
                     self.set(RIPPLE_L, Content::Clear);
                 } else {
-                    self.set(RIPPLE_L, Content::Ripple(ms));
+                    self.set(RIPPLE_L, Content::Shape(Shape::Ripple(ms)));
                 }
             }
             if let Some((a, b, start)) = self.tail {
@@ -566,7 +651,7 @@ impl Painter {
                     self.tail = None;
                     self.set(TAIL_L, Content::Clear);
                 } else {
-                    self.set(TAIL_L, Content::Tail(a, b, ms));
+                    self.set(TAIL_L, Content::Shape(Shape::Tail(a, b, ms)));
                 }
             }
         }
@@ -596,30 +681,34 @@ impl Painter {
                 let _ = done.send(());
             }
             Cmd::Click(x, y) if driven => {
-                let half = (RIPPLE / 2) as i32;
-                self.place(RIPPLE_L, x.round() as i32 - half, y.round() as i32 - half);
+                let half = (self.scale.snap_up(RIPPLE) / 2) as i32;
+                let s = self.scale;
+                self.place(RIPPLE_L, s.snap(x.round() as i32 - half), s.snap(y.round() as i32 - half));
                 self.ripple_since = Some(Instant::now());
-                self.set(RIPPLE_L, Content::Ripple(0));
+                self.set(RIPPLE_L, Content::Shape(Shape::Ripple(0)));
             }
             Cmd::Jump(a, b) if driven => {
-                let (x0, y0) = ((a.0.min(b.0) - f64::from(TAIL_PAD)).round(), (a.1.min(b.1) - f64::from(TAIL_PAD)).round());
-                let (w, h) = ((a.0 - b.0).abs() + 2.0 * f64::from(TAIL_PAD), (a.1 - b.1).abs() + 2.0 * f64::from(TAIL_PAD));
+                let s = self.scale;
+                let (x0, y0) = (s.snap((a.0.min(b.0) - f64::from(TAIL_PAD)).round() as i32), s.snap((a.1.min(b.1) - f64::from(TAIL_PAD)).round() as i32));
+                let (x1, y1) = (a.0.max(b.0) + f64::from(TAIL_PAD), a.1.max(b.1) + f64::from(TAIL_PAD));
                 if (a.0 - b.0).abs().max((a.1 - b.1).abs()) > 24.0 {
-                    self.place(TAIL_L, x0 as i32, y0 as i32);
-                    self.resize(TAIL_L, w.ceil() as u32, h.ceil() as u32);
-                    let local = |p: (f64, f64)| ((p.0 - x0) as f32, (p.1 - y0) as f32);
+                    self.place(TAIL_L, x0, y0);
+                    self.resize(TAIL_L, s.snap_up((x1 - f64::from(x0)).ceil() as u32), s.snap_up((y1 - f64::from(y0)).ceil() as u32));
+                    let local = |p: (f64, f64)| ((p.0 - f64::from(x0)) as f32, (p.1 - f64::from(y0)) as f32);
                     self.tail = Some((local(a), local(b), Instant::now()));
-                    self.set(TAIL_L, Content::Tail(local(a), local(b), 0));
+                    self.set(TAIL_L, Content::Shape(Shape::Tail(local(a), local(b), 0)));
                 }
             }
             Cmd::Caption(text) if driven => {
                 if let Some(font) = &self.font {
-                    let px = self.theme.caption_px;
+                    let (px, s) = (self.theme.caption_px, self.scale);
                     let max = (self.monitor.width as f32 - 80.0).max(120.0);
                     let text = draw::fit(font, px, &text, max - 2.0 * CAPTION_PAD);
-                    let w = draw::text_width(font, px, &text) + 2.0 * CAPTION_PAD;
-                    let h = px + 2.0 * CAPTION_PAD;
-                    self.resize(CAPTION_L, w.ceil() as u32, h.ceil() as u32);
+                    let w = s.snap_up((draw::text_width(font, px, &text) + 2.0 * CAPTION_PAD).ceil() as u32);
+                    let h = s.snap_up((px + 2.0 * CAPTION_PAD).ceil() as u32);
+                    let x = s.snap((self.monitor.width.round() as i32 - w as i32) / 2);
+                    self.place_bottom(CAPTION_L, x, s.snap(CAPTION_MARGIN));
+                    self.resize(CAPTION_L, w, h);
                     self.set(CAPTION_L, Content::Caption(text, self.mode));
                     self.caption_until = Some(Instant::now() + CAPTION_FOR);
                 }
@@ -655,6 +744,7 @@ impl Painter {
             }
         }
         self.queue.dispatch_pending(&mut self.state)?;
+        self.apply_scale();
         if !self.state.configures.is_empty() {
             self.apply_configures()?;
         }
@@ -681,6 +771,17 @@ impl Painter {
                 return;
             }
         }
+    }
+}
+
+fn edge_layer(side: Side, scale: Scale) -> (zwlr_layer_surface_v1::Anchor, (u32, u32)) {
+    use zwlr_layer_surface_v1::Anchor;
+    let edge = (scale.snap(EDGE as i32) as u32).max(scale.step());
+    match side {
+        Side::Top => (Anchor::Top | Anchor::Left | Anchor::Right, (0, edge)),
+        Side::Bottom => (Anchor::Bottom | Anchor::Left | Anchor::Right, (0, edge)),
+        Side::Left => (Anchor::Left | Anchor::Top | Anchor::Bottom, (edge, 0)),
+        Side::Right => (Anchor::Right | Anchor::Top | Anchor::Bottom, (edge, 0)),
     }
 }
 
@@ -743,19 +844,6 @@ fn dither(mut c: Canvas) -> Canvas {
     c
 }
 
-/// Scale `c` up by `k` whole pixels into a `w` x `h` canvas (cropping what spills over).
-fn upscale(c: &Canvas, k: u32, w: u32, h: u32) -> Canvas {
-    let mut out = Canvas::new(w, h);
-    for y in 0..h {
-        let sy = (y / k).min(c.h.saturating_sub(1));
-        for x in 0..w {
-            let sx = (x / k).min(c.w.saturating_sub(1));
-            out.px[(y * w + x) as usize] = c.px[(sy * c.w + sx) as usize];
-        }
-    }
-    out
-}
-
 /// The system's bold sans for captions, found through fontconfig; none means no captions.
 fn caption_font() -> Option<fontdue::Font> {
     let out = std::process::Command::new("fc-match").args(["-f", "%{file}", "sans-serif:bold"]).output().ok()?;
@@ -796,6 +884,14 @@ impl Dispatch<wl_callback::WlCallback, ()> for State {
     }
 }
 
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for State {
+    fn event(state: &mut Self, _: &wp_fractional_scale_v1::WpFractionalScaleV1, event: wp_fractional_scale_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.preferred_scale = Some(scale);
+        }
+    }
+}
+
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore wl_region::WlRegion);
@@ -805,6 +901,7 @@ delegate_noop!(State: ignore wl_buffer::WlBuffer);
 delegate_noop!(State: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(State: ignore wp_viewporter::WpViewporter);
 delegate_noop!(State: ignore wp_viewport::WpViewport);
+delegate_noop!(State: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 
 #[cfg(test)]
 mod tests {
@@ -841,10 +938,31 @@ mod tests {
     }
 
     #[test]
-    fn upscaling_is_by_whole_pixels_and_crops_to_the_layer() {
-        let mut c = Canvas::new(2, 1);
-        c.px = vec![1, 2];
-        let u = upscale(&c, 3, 5, 2);
-        assert_eq!(u.px, vec![1, 1, 1, 2, 2, 1, 1, 1, 2, 2]);
+    fn a_fractional_scale_snaps_layers_to_whole_device_px() {
+        let s = Scale::of(1.5, true);
+        assert_eq!((s.device(136), s.device(12), s.step()), (204, 18, 2));
+        assert_eq!((s.snap(67), s.snap_up(25)), (68, 26));
+        assert_eq!(Scale::of(1.25, true).step(), 4);
+        assert_eq!(Scale::of(1.5, false), Scale(240), "without the protocol, the next whole scale");
+        for scale in [1.0, 1.25, 1.5, 1.6, 2.0] {
+            let s = Scale::of(scale, true);
+            for logical in [s.snap_up(RIPPLE), s.snap_up(37), s.snap(EDGE as i32) as u32] {
+                assert_eq!(logical * s.0 % 120, 0, "{logical} logical px at {scale} is whole device px");
+            }
+        }
+    }
+
+    #[test]
+    fn cells_fill_solid_squares_whose_edges_land_on_device_px() {
+        let mut cells = Canvas::new(3, 2);
+        cells.px = vec![1, 2, 3, 4, 5, 6].into_iter().map(|v| 0xff00_0000 | v).collect();
+        let s = Scale::of(1.5, true);
+        let c = Cells { canvas: cells, p: 3 }.fill(s, s.device(9), s.device(6));
+        assert_eq!((c.w, c.h), (14, 9));
+        let row = |y: u32| c.px[(y * c.w) as usize..((y + 1) * c.w) as usize].iter().map(|p| p & 0xff).collect::<Vec<_>>();
+        assert_eq!(row(0), [1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3]);
+        assert!((1..5).all(|y| row(y) == row(0)), "the first cell row is 5 device px tall");
+        assert!((5..9).all(|y| row(y) == [4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 6]));
+        assert!(c.px.iter().all(|p| p >> 24 == 0xff), "every device px is one cell's colour, none blended");
     }
 }
