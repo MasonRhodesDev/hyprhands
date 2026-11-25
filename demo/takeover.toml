@@ -1,0 +1,60 @@
+name     = "hyprhands-demo-takeover"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[[setup]]
+push = { src = "hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[[setup]]
+session = "sudo pacman -Sy --needed --noconfirm gnome-calculator >/dev/null"
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1"]
+
+[[step]]
+id = "start"
+do = { wait_ms = 800 }
+
+[[step]]
+id = "open-calculator"
+do = { hyprhands = { op = "launch", argv = ["gnome-calculator"], caption = "agent: open the calculator" } }
+settle_ms = 1000
+
+[[step]]
+id = "agent-7"
+do = { hyprhands = { op = "click", x = 367, y = 600, caption = "agent: 7 + 5" } }
+settle_ms = 400
+
+[[step]]
+id = "agent-plus"
+do = { hyprhands = { op = "click", x = 775, y = 695, caption = "agent: 7 + 5" } }
+settle_ms = 600
+
+[[step]]
+id = "owner-1"
+do = { vmkit = ["move", "980", "420"] }
+settle_ms = 60
+
+[[step]]
+id = "owner-2"
+do = { vmkit = ["move", "1060", "330"] }
+settle_ms = 60
+
+[[step]]
+id = "owner-3"
+do = { vmkit = ["move", "1120", "260"] }
+settle_ms = 60
+
+[[step]]
+id = "owner-4"
+do = { vmkit = ["move", "1150", "230"] }
+settle_ms = 700
+
+[[step]]
+id = "agent-refused"
+do = { hyprhands = { op = "click", x = 503, y = 647, caption = "agent: 7 + 5" } }
+settle_ms = 2500
+
+[[step]]
+id = "done"
+do = { wait_ms = 1000 }
