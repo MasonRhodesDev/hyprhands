@@ -1,0 +1,93 @@
+name     = "hyprhands-demo-tour"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[[setup]]
+push = { src = "hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[[setup]]
+session = "sudo pacman -Sy --needed --noconfirm gnome-calculator gnome-text-editor nautilus >/dev/null"
+
+[[setup]]
+session = "mkdir -p ~/Documents/notes ~/Music ~/Pictures ~/Projects && printf 'buy milk\\n' > ~/Documents/notes/todo.txt && touch ~/Documents/report.odt"
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1"]
+
+[[step]]
+id = "start"
+do = { wait_ms = 300 }
+
+[[step]]
+id = "open-calculator"
+do = { hyprhands = { op = "launch", argv = ["gnome-calculator"], caption = "open the calculator" } }
+settle_ms = 900
+
+[[step]]
+id = "calc-1"
+do = { hyprhands = { op = "click", x = 367, y = 695, caption = "work out 12 × 3" } }
+settle_ms = 350
+
+[[step]]
+id = "calc-2"
+do = { hyprhands = { op = "click", x = 503, y = 695, caption = "work out 12 × 3" } }
+settle_ms = 350
+
+[[step]]
+id = "calc-times"
+do = { hyprhands = { op = "click", x = 775, y = 600, caption = "work out 12 × 3" } }
+settle_ms = 350
+
+[[step]]
+id = "calc-3"
+do = { hyprhands = { op = "click", x = 639, y = 695, caption = "work out 12 × 3" } }
+settle_ms = 350
+
+[[step]]
+id = "calc-equals"
+do = { hyprhands = { op = "click", x = 911, y = 720, caption = "work out 12 × 3" } }
+settle_ms = 900
+
+[[step]]
+id = "read-answer"
+do = { hyprhands = { op = "tree", text = true } }
+settle_ms = 300
+
+[[step]]
+id = "open-editor"
+do = { hyprhands = { op = "launch", argv = ["gnome-text-editor"], caption = "open a text editor" } }
+settle_ms = 900
+
+[[step]]
+id = "editor-type"
+do = { hyprhands = { op = "type", text = "12 × 3 = 36, read off the calculator’s accessibility tree ✓", caption = "type any character, on any layout" } }
+settle_ms = 1200
+
+[[step]]
+id = "open-files"
+do = { hyprhands = { op = "launch", argv = ["nautilus"], caption = "open the file manager" } }
+settle_ms = 1200
+
+[[step]]
+id = "files-documents"
+do = { hyprhands = { op = "click", x = 757, y = 530, caption = "browse to Documents" } }
+settle_ms = 400
+
+[[step]]
+id = "files-open"
+do = { hyprhands = { op = "key", combo = "Return", caption = "press Return" } }
+settle_ms = 1200
+
+[[step]]
+id = "files-notes"
+do = { hyprhands = { op = "click", x = 757, y = 530, caption = "open notes" } }
+settle_ms = 400
+
+[[step]]
+id = "files-notes-open"
+do = { hyprhands = { op = "key", combo = "Return", caption = "open notes" } }
+settle_ms = 1500
+
+[[step]]
+id = "done"
+do = { wait_ms = 1200 }

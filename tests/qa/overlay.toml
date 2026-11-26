@@ -1,13 +1,13 @@
 # What the owner sees while hyprhands drives, in the default theme (8-bit construction site): the
 # hazard-tape frame, the robot cursor (on the arrow and on an app's own I-beam), the movement
-# tail, the click ripple, captions in the pixel font, the capture blink, the stopped state, and
+# tail, the click ripple, captions, the capture blink, the stopped state, and
 # the cleanup when the session dies.
 #
 # Run with hypr-qa (https://github.com/MasonRhodesDev/hypr-qa) on the KVM host, from a hyprhands
 # checkout built in release:  hypr-qa run tests/qa/overlay.toml
 #
 # The construction theme's colours are fixed (src/theme.rs): tape #ffc400 / #141414, stopped
-# #e5202a / #f4f4f4, ripple #b6ff00, tail #ff6a13. It draws 3 px pixels, so fades are dithered
+# #e5202a / #f4f4f4, ripple #b6ff00, tail #ff6a13. Its shapes are 3 px blocks, so fades are dithered
 # and exact shapes are blocky: checks use colours with generous regions. The frame is 12 px; the
 # ripple lasts ~1 s; the tail draws over 220 ms and fades over 420 ms; no tint by default.
 # The guest is plain-hyprland: Virtual-1, 1280x800, scale 1, Adwaita cursors at 24, foot.
@@ -96,7 +96,7 @@ settle_ms = 500
   tolerance = 32
   min_fraction = 0.04
 
-  [[step.expect]]                  # caption for the move, in the pixel font
+  [[step.expect]]                  # caption for the move
   at = "+100ms..+1500ms"
   anchor = "ack"
   check = "ocr"

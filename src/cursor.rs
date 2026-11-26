@@ -146,7 +146,7 @@ impl Drop for RobotCursor {
 }
 
 /// Bumped whenever the badging changes, so a theme written by an older hyprhands is rewritten.
-const BADGE_VERSION: u32 = 2;
+const BADGE_VERSION: u32 = 3;
 
 /// The theme: every shape of the owner's theme (its own and those it inherits) with the robot
 /// stamped on, an index inheriting the owner's theme for anything missed, and the drawn robot
@@ -167,7 +167,6 @@ fn write_theme_from(dir: &Path, base: &str, search: &[PathBuf]) -> Result<()> {
     let _ = std::fs::remove_dir_all(&cursors); // ours alone: rebuilt from the owner's theme
     std::fs::create_dir_all(&cursors).with_context(|| format!("creating {}", cursors.display()))?;
     std::fs::write(dir.join("index.theme"), format!("[Icon Theme]\nName=hyprhands\nComment=The pointer while hyprhands drives\nInherits={base}\n"))?;
-    let (_, robot) = qoi::decode_to_vec(include_bytes!("../assets/robot-32.qoi")).context("the robot asset")?;
     // Aliases (mostly symlinks in a theme) share one badged file: the first name written for a
     // file is the real one, the rest link to it.
     let mut written: HashMap<PathBuf, String> = HashMap::new();
@@ -179,7 +178,7 @@ fn write_theme_from(dir: &Path, base: &str, search: &[PathBuf]) -> Result<()> {
         }
         let Some(mut images) = std::fs::read(&target).ok().and_then(|b| xcursor_read(&b)) else { continue };
         for img in &mut images {
-            badge(img, &robot);
+            badge(img);
         }
         std::fs::write(cursors.join(name), xcursor(&images)).with_context(|| format!("writing cursor {name}"))?;
         written.insert(target, name.clone());
@@ -237,7 +236,7 @@ fn base_shapes(theme: &str, search: &[PathBuf]) -> BTreeMap<String, PathBuf> {
 
 /// Stamp the robot on one cursor image: at the lower right of what the image actually draws (an
 /// I-beam is a thin strip in the middle of its square), kept inside the image, hotspot untouched.
-fn badge(img: &mut XImage, robot: &[u8]) {
+fn badge(img: &mut XImage) {
     let c = &mut img.canvas;
     let side = ((img.nominal as f32 * 0.58).round() as u32).min(c.w).min(c.h).max(1);
     let drawn = (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).filter(|&(x, y)| c.px[(y * c.w + x) as usize] >> 24 > 0x40);
@@ -254,7 +253,7 @@ fn badge(img: &mut XImage, robot: &[u8]) {
     let overlap = side * 2 / 5;
     let x = (x1 + 1 + overlap).saturating_sub(side).min(c.w - side);
     let y = (y1 + 1 + overlap).saturating_sub(side).min(c.h - side);
-    c.image(robot, 32, 32, i64::from(x), i64::from(y), side);
+    robot(c, x as f32, y as f32, side as f32);
 }
 
 /// The arrow at `size` px with the robot badge at its lower right; the hotspot is the tip.
@@ -266,12 +265,37 @@ fn robot_arrow(size: u32) -> (Canvas, (u32, u32)) {
     let outline: Vec<(f32, f32)> = grow(&arrow, 1.1 * k);
     c.polygon(&outline, Rgba(0x10, 0x10, 0x10, 0xff));
     c.polygon(&arrow, Rgba(0xff, 0xff, 0xff, 0xff));
-    let (_, robot) = qoi::decode_to_vec(include_bytes!("../assets/robot-32.qoi")).expect("the robot asset decodes");
-    let badge = (size as f32 * 0.58).round() as u32;
-    let at = i64::from(size - badge);
-    c.image(&robot, 32, 32, at, at, badge);
+    let badge = (size as f32 * 0.58).round();
+    let at = size as f32 - badge;
+    robot(&mut c, at, at, badge);
     let tip = k.round() as u32;
     (c, (tip, tip))
+}
+
+const ROBOT_GREY: Rgba = Rgba(0x90, 0xa4, 0xae, 0xff);
+const ROBOT_RED: Rgba = Rgba(0xc6, 0x28, 0x28, 0xff);
+const ROBOT_DARK: Rgba = Rgba(0x45, 0x5a, 0x64, 0xff);
+const ROBOT_WHITE: Rgba = Rgba(0xff, 0xff, 0xff, 0xff);
+const ROBOT_GRILLE: Rgba = Rgba(0xec, 0xef, 0xf1, 0xff);
+
+fn robot(c: &mut Canvas, x: f32, y: f32, side: f32) {
+    let k = side / 32.0;
+    let mut rect = |ux: f32, uy: f32, uw: f32, uh: f32, r: f32, colour: Rgba| c.rounded_rect(x + ux * k, y + uy * k, uw * k, uh * k, r * k, colour);
+    rect(0.0, 12.5, 32.0, 15.0, 1.8, ROBOT_RED);
+    rect(15.0, 3.0, 2.0, 6.0, 0.0, ROBOT_GREY);
+    rect(3.0, 8.0, 26.0, 23.5, 3.0, ROBOT_GREY);
+    rect(9.0, 23.5, 14.0, 4.5, 1.0, ROBOT_GRILLE);
+    for bar in [12.0, 15.0, 18.0, 21.0] {
+        rect(bar, 23.5, 0.9, 4.5, 0.0, ROBOT_DARK);
+    }
+    let mut disc = |ux: f32, uy: f32, r: f32, colour: Rgba| c.disc(x + ux * k, y + uy * k, r * k, colour);
+    disc(16.0, 2.6, 2.4, ROBOT_GREY);
+    disc(16.0, 2.6, 1.3, ROBOT_RED);
+    for eye in [10.0, 22.0] {
+        disc(eye, 16.0, 3.7, ROBOT_DARK);
+        disc(eye, 16.0, 2.7, ROBOT_WHITE);
+    }
+    disc(16.0, 20.4, 1.4, ROBOT_RED);
 }
 
 /// A polygon pushed outward by `d` along each vertex's averaged normal (for the outline).
@@ -373,6 +397,20 @@ mod tests {
         assert!(a(4, 6) > 0x80, "arrow body near the tip");
         assert!(a(40, 40) > 0x80, "badge at the lower right");
         assert_eq!(a(46, 2), 0, "clear above the badge");
+    }
+
+    #[test]
+    fn the_smallest_badge_still_shows_a_grey_head_with_red_ears() {
+        let mut c = Canvas::filled(14, 14, Rgba(0xff, 0xff, 0xff, 0xff));
+        robot(&mut c, 0.0, 0.0, 14.0);
+        let near = |px: u32, (r, g, b): (u32, u32, u32)| {
+            let ch = |sh: u32| (px >> sh) & 0xff;
+            ch(16).abs_diff(r) <= 32 && ch(8).abs_diff(g) <= 32 && ch(0).abs_diff(b) <= 32
+        };
+        let grey = c.px.iter().filter(|&&p| near(p, (0x94, 0xa6, 0xaa))).count();
+        let red = c.px.iter().filter(|&&p| near(p, (0xc6, 0x28, 0x28))).count();
+        assert!(grey >= 50, "head pixels: {grey}");
+        assert!(red >= 4, "ear and antenna pixels: {red}");
     }
 
     #[test]

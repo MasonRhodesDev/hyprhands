@@ -93,7 +93,7 @@ impl Frame<'_> {
         for (row, dst) in out.chunks_exact_mut(w * 3).enumerate() {
             let src_row = if self.y_invert { h - 1 - row } else { row };
             let src = &self.bytes[src_row * stride..src_row * stride + w * 4];
-            for (px, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+            for (px, d) in src.as_chunks::<4>().0.iter().zip(dst.as_chunks_mut::<3>().0) {
                 d[0] = px[r];
                 d[1] = px[g];
                 d[2] = px[b];

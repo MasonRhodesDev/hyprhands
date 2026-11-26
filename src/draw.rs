@@ -1,7 +1,7 @@
 //! A small software rasterizer for the overlay: premultiplied ARGB pixels, antialiased rings,
-//! lines and rounded rectangles, an RGBA image blit, and text through fontdue. Everything the
-//! overlay draws is a few hundred pixels across, so doing it on the CPU is simpler than a GPU path
-//! and fast enough to redraw every frame of an animation.
+//! lines and rounded rectangles, and text through fontdue. Everything the overlay draws is a few
+//! hundred pixels across, so doing it on the CPU is simpler than a GPU path and fast enough to
+//! redraw every frame of an animation.
 
 /// Straight (not premultiplied) RGBA.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,36 +95,6 @@ impl Canvas {
             let (qx, qy) = ((px - cx).abs() - hw, (py - cy).abs() - hh);
             qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
         });
-    }
-
-    /// Straight RGBA rows (`iw` by `ih`) drawn with their top-left at (x, y), scaled to `side` px
-    /// square by averaging the source pixels each target pixel covers (premultiplied, so edges
-    /// against transparency stay clean).
-    pub fn image(&mut self, rgba: &[u8], iw: u32, ih: u32, x: i64, y: i64, side: u32) {
-        for dy in 0..side {
-            for dx in 0..side {
-                let (sx0, sx1) = (dx * iw / side, ((dx + 1) * iw).div_ceil(side).max(dx * iw / side + 1));
-                let (sy0, sy1) = (dy * ih / side, ((dy + 1) * ih).div_ceil(side).max(dy * ih / side + 1));
-                let (mut acc, mut n) = ([0f32; 4], 0f32);
-                for sy in sy0..sy1.min(ih) {
-                    for sx in sx0..sx1.min(iw) {
-                        let i = ((sy * iw + sx) * 4) as usize;
-                        let a = f32::from(rgba[i + 3]) / 255.0;
-                        acc[0] += f32::from(rgba[i]) * a;
-                        acc[1] += f32::from(rgba[i + 1]) * a;
-                        acc[2] += f32::from(rgba[i + 2]) * a;
-                        acc[3] += a;
-                        n += 1.0;
-                    }
-                }
-                if n == 0.0 || acc[3] <= 0.0 {
-                    continue;
-                }
-                let alpha = acc[3] / n;
-                let c = Rgba((acc[0] / acc[3]) as u8, (acc[1] / acc[3]) as u8, (acc[2] / acc[3]) as u8, 255);
-                self.blend(x + i64::from(dx), y + i64::from(dy), c, alpha);
-            }
-        }
     }
 
     /// A filled polygon (even-odd), antialiased by 4x4 supersampling.
@@ -253,29 +223,5 @@ mod tests {
         let a = |x: u32, y: u32| c.px[(y * 10 + x) as usize] >> 24;
         assert_eq!(a(2, 2), 0xff);
         assert_eq!(a(8, 8), 0);
-    }
-
-    #[test]
-    fn a_downscaled_image_averages_instead_of_dropping_pixels() {
-        // 2x2 source: one opaque red pixel, three clear ones -> one pixel of quarter coverage.
-        let src = [255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let mut c = Canvas::new(1, 1);
-        c.image(&src, 2, 2, 0, 0, 1);
-        let px = c.px[0];
-        assert!((px >> 24) > 0x30 && (px >> 24) < 0x50, "{px:08x}");
-    }
-
-    #[test]
-    fn the_robot_asset_is_a_32px_rgba_image() {
-        let (header, pixels) =
-            qoi::decode_to_vec(include_bytes!("../assets/robot-32.qoi")).unwrap();
-        assert_eq!(
-            (header.width, header.height, pixels.len()),
-            (32, 32, 32 * 32 * 4)
-        );
-        assert!(
-            pixels.chunks_exact(4).any(|p| p[3] == 255)
-                && pixels.chunks_exact(4).any(|p| p[3] == 0)
-        );
     }
 }

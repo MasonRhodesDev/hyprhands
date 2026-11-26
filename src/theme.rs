@@ -13,8 +13,10 @@
 //! pixel   = 2
 //! ```
 //!
-//! Colours are `#rrggbb` or `#rrggbbaa`. `pixel` is the size of one drawn pixel in logical px:
-//! 1 is smooth, 2 and up is 8-bit (fades become ordered dithering).
+//! Colours are `#rrggbb` or `#rrggbbaa`. `pixel` is the size of one drawn pixel of the tape, the
+//! ripple and the tail, in logical px: 1 is smooth, 2 and up is 8-bit, square blocks that land on
+//! device pixels at any monitor scale, with fades as ordered dithering. Caption text is always
+//! smooth.
 
 use crate::draw::Rgba;
 use anyhow::{Context, Result, bail};
@@ -32,7 +34,7 @@ pub enum Mode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
-    /// Logical px per drawn pixel: 1 smooth, 2+ 8-bit.
+    /// Logical px per drawn pixel of the tape, ripple and tail: 1 smooth, 2+ 8-bit.
     pub pixel: u32,
     /// The frame's two stripe colours while driving, and once stopped.
     pub stripe: [Rgba; 2],
@@ -46,7 +48,7 @@ pub struct Theme {
     pub caption_bg: Rgba,
     pub caption_fg: Rgba,
     pub caption_border: Rgba,
-    /// Caption text size in logical px (an 8-bit theme needs it larger to stay legible).
+    /// Caption text size in logical px.
     pub caption_px: f32,
 }
 
