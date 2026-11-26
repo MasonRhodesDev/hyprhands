@@ -5,14 +5,15 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(dirname "$here")"
 hypr_qa="${HYPR_QA:-$(command -v hypr-qa || true)}"
 out="${DEMO_OUT:-$repo/assets/demo}"
-width="${DEMO_WIDTH:-960}"
-fps="${DEMO_FPS:-15}"
-quality="${DEMO_QUALITY:-70}"
+width="${DEMO_WIDTH:-800}"
+fps="${DEMO_FPS:-10}"
+quality="${DEMO_QUALITY:-45}"
 
 [ -x "$hypr_qa" ] || { echo "render: set HYPR_QA to hypr-qa's bin/hypr-qa or put it on PATH" >&2; exit 2; }
 command -v ffmpeg >/dev/null || { echo "render: needs ffmpeg with libwebp_anim" >&2; exit 2; }
 
 stage="$(mktemp -d)"
+runs="${DEMO_RUNS:-$stage/runs}"
 trap 'rm -rf "$stage"' EXIT
 cargo build --release --manifest-path "$repo/Cargo.toml"
 bin="$(cargo metadata --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/hyprhands"
@@ -24,8 +25,8 @@ scenarios=("$@")
 
 for name in "${scenarios[@]}"; do
     cp "$here/$name.toml" "$stage/$name.toml"
-    "$hypr_qa" run --runs-dir "$stage/runs" "$stage/$name.toml" || true
-    video="$(find "$stage/runs" -path "*/$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb"))["name"])' "$here/$name.toml")/*" -name video.mkv | sort | tail -n 1)"
+    "$hypr_qa" run --runs-dir "$runs" "$stage/$name.toml" || true
+    video="$(find "$runs" -path "*/$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb"))["name"])' "$here/$name.toml")/*" -name video.mkv | sort | tail -n 1)"
     [ -n "$video" ] || { echo "render: $name left no video.mkv" >&2; exit 1; }
     ffmpeg -hide_banner -loglevel error -y -i "$video" \
         -vf "fps=$fps,scale=$width:-1:flags=lanczos" \
