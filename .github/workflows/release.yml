@@ -1,0 +1,20 @@
+name: Release
+
+# No COPR (no RPM spec); rpm: false skips that job. ARCH_REPO_TOKEN is still
+# required so the tag republishes [mason], which is how mason-air (aarch64)
+# and the desktop get hyprhands.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: MasonRhodesDev/packaging-workflows/.github/workflows/release.yml@v1
+    secrets: inherit
+    with:
+      pkgbuild-dir: packaging/arch
+      rpm: false
