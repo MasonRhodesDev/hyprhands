@@ -473,7 +473,8 @@ impl Painter {
         if self.role == Role::Driven {
             for (i, side) in EDGES {
                 let (_, (w, h)) = edge_layer(side, s);
-                self.resize(i, w, h);
+                self.layers[i].layer.set_size(w, h);
+                self.layers[i].surface.commit();
             }
             let ripple = s.snap_up(RIPPLE);
             self.resize(RIPPLE_L, ripple, ripple);

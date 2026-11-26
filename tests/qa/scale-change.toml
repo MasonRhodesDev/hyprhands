@@ -1,0 +1,46 @@
+name     = "hyprhands-scale-change"
+profile  = "plain-hyprland"
+snapshot = "session-ready"
+
+[[setup]]
+push = { src = "../../target/release/hyprhands", dst = "/usr/local/bin/hyprhands", mode = "0755" }
+
+[hyprhands]
+argv = ["hyprhands", "serve", "--monitor", "Virtual-1"]
+
+[[step]]
+id = "frame-up"
+do = { wait_ms = 600 }
+
+  [[step.expect]]
+  at = "+0ms..+500ms"
+  check = "pixel"
+  region = [0, 0, 300, 10]
+  color = "#ffc400"
+  tolerance = 40
+  min_fraction = 0.3
+
+[[step]]
+id = "rescale"
+do = { hyprctl = ["eval", "hl.monitor({ output = \"Virtual-1\", mode = \"1280x800@60\", position = \"0x0\", scale = 1.25 })"] }
+
+[[step]]
+id = "after"
+do = { wait_ms = 1500 }
+
+  [[step.expect]]
+  at = "+1000ms..+1400ms"
+  check = "pixel"
+  region = [0, 0, 300, 10]
+  color = "#ffc400"
+  tolerance = 40
+  min_fraction = 0.3
+
+  [[step.expect]]
+  at = "+1000ms..+1400ms"
+  check = "pixel"
+  region = [0, 300, 10, 200]
+  color = "#ffc400"
+  tolerance = 40
+  min_fraction = 0.3
+
